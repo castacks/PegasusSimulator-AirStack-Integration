@@ -79,13 +79,6 @@ class ROS2Backend(Backend):
         self._num_rotors = num_rotors
         self._namespace = config.get("namespace", "drone" + str(vehicle_id))
         
-        # Handle ROS Domain ID for multi-robot isolation
-        self._ros_domain_id = config.get("ros_domain_id", None)
-        if self._ros_domain_id is not None:
-            import os
-            os.environ["ROS_DOMAIN_ID"] = str(self._ros_domain_id)
-            carb.log_info(f"ROS2Backend: Set ROS_DOMAIN_ID to {self._ros_domain_id} for vehicle {vehicle_id}")
-
         # Save what whould be published/subscribed
         self._pub_graphical_sensors = config.get("pub_graphical_sensors", True)
         self._pub_sensors = config.get("pub_sensors", True)
