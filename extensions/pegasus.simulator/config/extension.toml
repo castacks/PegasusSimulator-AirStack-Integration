@@ -1,6 +1,6 @@
 [package]
 # Semantic Versioning is used: https://semver.org/
-version = "4.5.0"
+version = "5.1.0"
 
 # Lists people or organizations that are considered the "authors" of the package.
 authors = ["Marcelo Jacinto"]
@@ -48,7 +48,7 @@ include = ["pegasus/simulator/ogn/python/nodes/*.ogn", "pegasus/simulator/ogn/py
 "omni.kit.uiapp" = {}
 "omni.isaac.core" = {}
 "omni.ui.scene" = {}
-"omni.kit.window.viewport" = {}
+"omni.kit.capture.viewport" = {}
 "isaacsim.replicator.agent.core" = {}
 "omni.graph.core" = {}
 "omni.graph" = {}
