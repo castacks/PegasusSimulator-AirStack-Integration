@@ -8,7 +8,7 @@ import carb
 # Default Ouster OS1 USD asset
 OUSTER_LIDAR_USD_URL = (
     "https://omniverse-content-production.s3-us-west-2.amazonaws.com/"
-    "Assets/Isaac/4.5/Isaac/Sensors/Ouster/OS1/OS1_REV6_128_10hz___512_resolution.usd"
+    "Assets/Isaac/5.1/Isaac/Sensors/Ouster/OS1/OS1_REV6_128_10hz___512_resolution.usd"
 )
 
 
