@@ -79,6 +79,7 @@ def attach_lidar_to_drone(
     sensor_new_path = f"{lidar_prim_path}/{frame_id}"
     sensor_old = stage.GetPrimAtPath(sensor_old_path)
 
+
     if sensor_old.IsValid():
         carb.log_info(f"Renaming internal LiDAR sensor '{sensor_old_path}' → '{sensor_new_path}'")
         omni.kit.commands.execute(
@@ -87,6 +88,8 @@ def attach_lidar_to_drone(
             path_to=sensor_new_path,
             duplicate_layers=True,
         )
+        sensor_old.SetActive(False)  # Deactivate old sensor to prevent issues during copy
+        stage.GetPrimAtPath(sensor_new_path).SetActive(True)  # Activate new sensor
         omni.kit.commands.execute("DeletePrim", path=sensor_old_path)
     else:
         carb.log_warn(f"No '/sensor' child found under '{lidar_prim_path}'.")

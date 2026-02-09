@@ -6,7 +6,7 @@ import omni
 
 ZED_X_CAMERA_USD_URL = (
     "https://omniverse-content-production.s3-us-west-2.amazonaws.com/"
-    "Assets/Isaac/4.5/Isaac/Sensors/Stereolabs/ZED_X/ZED_X.usd"
+    "Assets/Isaac/5.1/Isaac/Sensors/Stereolabs/ZED_X/ZED_X.usdc"
 )
 
 def attach_camera_to_drone(
@@ -50,13 +50,7 @@ def attach_camera_to_drone(
 
     combined_rot = yaw_rot * pitch_rot * roll_rot
     user_quat = combined_rot.GetQuat()
-
-    # Corrective rotation to match USD axis conventions (Z-forward)
-    corrective_quat = Gf.Rotation(Gf.Vec3d(0, 0, 1), 90).GetQuat()
-
     user_rot = Gf.Quatf(user_quat.GetReal(), *user_quat.GetImaginary())
-    corrective_rot = Gf.Quatf(corrective_quat.GetReal(), *corrective_quat.GetImaginary())
-    final_rot = user_rot * corrective_rot
 
     # Apply translation and rotation
     xform = UsdGeom.Xformable(prim)
@@ -65,7 +59,7 @@ def attach_camera_to_drone(
     orient_op = xform.AddOrientOp()
 
     translate_op.Set(Gf.Vec3d(*camera_offset))
-    orient_op.Set(final_rot)
+    orient_op.Set(user_rot)
     xform.SetXformOpOrder([translate_op, orient_op])
 
     # Create a fixed joint to lock camera to drone body
@@ -87,6 +81,12 @@ def attach_camera_to_drone(
 
     omni.kit.commands.execute("CopyPrim", path_from=left_old, path_to=left_new)
     omni.kit.commands.execute("CopyPrim", path_from=right_old, path_to=right_new)
+
+    # deactivate old prims, activate new prims
+    stage.GetPrimAtPath(left_old).SetActive(False)
+    stage.GetPrimAtPath(right_old).SetActive(False)
+    stage.GetPrimAtPath(left_new).SetActive(True)
+    stage.GetPrimAtPath(right_new).SetActive(True)
 
     app.update()
 
