@@ -155,7 +155,7 @@ def add_zed_stereo_camera_subgraph(
 
     # Node names
     nodes = {
-        "playback": f"{robot_name}_{camera_name}_PlaybackTick",
+        "playback": f"{robot_name}_{camera_name}_OnPhysicsStep",
         "info_helper": f"{robot_name}_{camera_name}_StereoInfoHelper",
         "domain_id_const": f"{robot_name}_{camera_name}_DomainIdConst",
         "stereo_ns_const": f"{robot_name}_{camera_name}_StereoNsConst",
@@ -189,7 +189,7 @@ def add_zed_stereo_camera_subgraph(
                     {
                         og.Controller.Keys.CREATE_NODES: [
                             # Core nodes
-                            (nodes["playback"], "omni.graph.action.OnPlaybackTick"),
+                            (nodes["playback"], "isaacsim.core.nodes.OnPhysicsStep"),
                             (nodes["info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
                             # Context management
                             (nodes["ros2_context"], "isaacsim.ros2.bridge.ROS2Context"),
@@ -212,10 +212,10 @@ def add_zed_stereo_camera_subgraph(
 
                         # Wiring between nodes
                         og.Controller.Keys.CONNECT: [
-                            # Trigger render products every playback tick
-                            (f"{nodes['playback']}.outputs:tick", f"{left_nodes['create_rp']}.inputs:execIn"),
-                            (f"{nodes['playback']}.outputs:tick", f"{right_nodes['create_rp']}.inputs:execIn"),
-                            (f"{nodes['playback']}.outputs:tick", f"{nodes['info_helper']}.inputs:execIn"),
+                            # Trigger render products every physics step
+                            (f"{nodes['playback']}.outputs:step", f"{left_nodes['create_rp']}.inputs:execIn"),
+                            (f"{nodes['playback']}.outputs:step", f"{right_nodes['create_rp']}.inputs:execIn"),
+                            (f"{nodes['playback']}.outputs:step", f"{nodes['info_helper']}.inputs:execIn"),
 
                             # Domain ID -> Context
                             (f"{nodes['domain_id_reader']}.outputs:value", f"{nodes['ros2_context']}.inputs:domain_id"),

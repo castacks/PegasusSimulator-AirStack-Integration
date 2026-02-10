@@ -147,7 +147,7 @@ def add_ouster_lidar_subgraph(
     Adds a lidar and builds a minimal ROS2 OmniGraph subgraph that publishes the LiDAR's point cloud.
 
     The graph includes:
-        - Playback tick trigger
+        - OnPhysicsStep tick trigger
         - One simulation step node
         - LiDAR render product creation
         - RTX LiDAR ROS2 helper
@@ -188,11 +188,10 @@ def add_ouster_lidar_subgraph(
     parent_graph_path = parent_graph_handle.get_path_to_graph()
     lidar_subgraph_name = f"{lidar_name}Graph"
 
-    playback_tick = f"{lidar_name}PlaybackTick"
+    physics_step = f"{lidar_name}OnPhysicsStep"
     create_render = f"{lidar_name}CreateRenderProduct"
     rtx_helper = f"{lidar_name}ROS2RtxLidarHelper"
     ros2Context_node_name = f"{robot_name}_ROS2Context"
-    run_one_sim_frame = f"{lidar_name}RunOneSimFrame"
     frame_const = f"{lidar_name}FrameIdConst"
     ns_const = f"{lidar_name}NamespaceConst"
     domainIDReader_node_name = f"{lidar_name}DomainIDReader"
@@ -205,12 +204,11 @@ def add_ouster_lidar_subgraph(
                     lidar_subgraph_name,
                     {
                         og.Controller.Keys.CREATE_NODES: [
-                            (playback_tick, "omni.graph.action.OnPlaybackTick"),
+                            (physics_step, "isaacsim.core.nodes.OnPhysicsStep"),
                             (create_render, "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                             (rtx_helper, "isaacsim.ros2.bridge.ROS2RtxLidarHelper"),
                             (frame_const, "omni.graph.nodes.ConstantString"),
                             (ns_const, "omni.graph.nodes.ConstantString"),
-                            (run_one_sim_frame, "isaacsim.core.nodes.OgnIsaacRunOneSimulationFrame"),
                             (domainIDReader_node_name, "omni.graph.core.ReadVariable"),
                             (ros2Context_node_name, "isaacsim.ros2.bridge.ROS2Context"),
                         ],
@@ -228,8 +226,7 @@ def add_ouster_lidar_subgraph(
                             (f"{domainIDReader_node_name}.inputs:variableName", domain_id_var),
                         ],
                         og.Controller.Keys.CONNECT: [
-                            (f"{playback_tick}.outputs:tick", f"{run_one_sim_frame}.inputs:execIn"),
-                            (f"{run_one_sim_frame}.outputs:step", f"{create_render}.inputs:execIn"),
+                            (f"{physics_step}.outputs:step", f"{create_render}.inputs:execIn"),
                             (f"{create_render}.outputs:execOut", f"{rtx_helper}.inputs:execIn"),
                             (f"{create_render}.outputs:renderProductPath", f"{rtx_helper}.inputs:renderProductPath"),
                             (f"{frame_const}.inputs:value", f"{rtx_helper}.inputs:frameId"),
