@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 # Low level APIs
 import carb
-from pxr import Usd, Gf
+from pxr import Usd, Gf, UsdGeom
 
 # High level Isaac sim APIs
 import omni.usd
@@ -109,7 +109,8 @@ class Vehicle(Robot):
         self._vehicle_dc_interface = None
 
         # Add this object for the world to track, so that if we clear the world, this object is deleted from memory and
-        # as a consequence, from the VehicleManager as well
+        if self._world.scene.object_exists(self._stage_prefix):
+            self._world.scene.remove_object(self._stage_prefix, registry_only=True)
         self._world.scene.add(self)
 
         # Add the current vehicle to the vehicle manager, so that it knows
@@ -118,6 +119,32 @@ class Vehicle(Robot):
 
         # Variable that will hold the current state of the vehicle
         self._state = State()
+
+        # Gazebo -> Isaac conversion might have introduced a local rotation on the /body prim. We cache the inverse of this rotation here to compensate for it in the state.attitude, so that the attitude reflects the actual heading of the vehicle rather than the visual orientation of the /body prim. 
+        # If there is significant rotation, we log a warning to inform the user that this compensation is being applied.
+        self._body_local_rotation_inv = Rotation.identity()
+        body_prim = self._current_stage.GetPrimAtPath(self._stage_prefix + "/body")
+        if body_prim.IsValid():
+            xformable = UsdGeom.Xformable(body_prim)
+            if xformable:
+                local_mat = xformable.GetLocalTransformation()
+                local_rot = local_mat.ExtractRotation()
+                local_quat = local_rot.GetQuaternion()
+                qr = local_quat.GetReal()
+                qi = local_quat.GetImaginary()
+                quat_xyzw = np.array([float(qi[0]), float(qi[1]), float(qi[2]), float(qr)])
+                norm = np.linalg.norm(quat_xyzw)
+                if norm > 1e-10:
+                    quat_xyzw = quat_xyzw / norm
+                    body_local_rot = Rotation.from_quat(quat_xyzw)
+                    # Only compensate if there's a meaningful rotation (>1°)
+                    angle = body_local_rot.magnitude()
+                    if np.degrees(angle) > 1.0:
+                        self._body_local_rotation_inv = body_local_rot.inv()
+                        carb.log_warn(
+                            f"[Vehicle] /body has local rotation of {np.degrees(angle):.1f}°. "
+                            f"Compensating in state.attitude to report root frame orientation."
+                        )
 
         # Add a callback to the physics engine to update the current state of the system
         self._world.add_physics_callback(self._stage_prefix + "/state", self.update_state)
@@ -175,6 +202,19 @@ class Vehicle(Robot):
 
         # Add a callbacks for the
         self._world.add_physics_callback(self._stage_prefix + "/mav_state", self.update_sim_state)
+
+        if self._world.is_playing() and not self._sim_running:
+            carb.log_info(
+                f"[Vehicle] Simulation already playing — starting backends for '{self._stage_prefix}'"
+            )
+            self._sim_running = True
+            for sensor in self._sensors:
+                sensor.start()
+            for graphical_sensor in self._graphical_sensors:
+                graphical_sensor.start()
+            for backend in self._backends:
+                backend.start()
+            self.start()
 
     def __str__(self):
         """String representation of the vehicle.
@@ -344,9 +384,13 @@ class Vehicle(Robot):
         self._state.position = np.array(pose.p)
 
         # Get the quaternion according in the [qx,qy,qz,qw] standard
-        self._state.attitude = np.array(
+        body_world_attitude = np.array(
             [rotation_quat_img[0], rotation_quat_img[1], rotation_quat_img[2], rotation_quat_real]
         )
+
+        # Compensate for the /body prim's baked-in local rotation.
+        corrected_rot = Rotation.from_quat(body_world_attitude) * self._body_local_rotation_inv
+        self._state.attitude = corrected_rot.as_quat()  # [qx, qy, qz, qw]
 
         # Express the velocity of the vehicle in the inertial frame X_dot = [x_dot, y_dot, z_dot]
         self._state.linear_velocity = np.array(linear_vel)
