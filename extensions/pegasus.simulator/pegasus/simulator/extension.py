@@ -84,6 +84,13 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
         # Show the window (It call the self.show_window)
         ui.Workspace.show_window(WINDOW_TITLE, show=True)
 
+        # Subscribe to timeline events so we can re-apply lidar overrides
+        # and reset ROS2Context nodes every time the user presses Play.
+        timeline = omni.timeline.get_timeline_interface()
+        self._timeline_sub = timeline.get_timeline_event_stream().create_subscription_to_pop(
+            self._on_timeline_event
+        )
+
         # Subscribe to stage events
         print("Subscribing to stage events")
 
@@ -94,18 +101,58 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
         self.stage_subscription = stage_event_stream.create_subscription_to_pop(
             self.on_stage_event, name="my_stage_listener"
         )
-    
+
+    def _on_timeline_event(self, event):
+        """Called on every timeline event.  On PLAY we:
+        1. Re-apply lidar near-range overrides from USD custom attributes.
+        2. Reset every ROS2Context node so a fresh DDS participant is created
+           (the old uint64 pointer is stale after a USD save/reload or
+           Stop→Play cycle).
+        """
+        if event.type == int(omni.timeline.TimelineEventType.PLAY):
+            # ── Reset ROS2Context nodes ──────────────────────────────────
+            try:
+                import omni.graph.core as og
+                for graph in og.get_all_graphs():
+                    for node in graph.get_nodes():
+                        if node.get_node_type().get_node_type() == "isaacsim.ros2.bridge.ROS2Context":
+                            # Dirty the node so it recomputes a fresh DDS participant on next evaluation.
+                            env_attr = node.get_attribute("inputs:useDomainIDEnvVar")
+                            if env_attr and env_attr.is_valid():
+                                old_val = og.Controller.get(env_attr)
+                                og.Controller.set(env_attr, not old_val)
+                                og.Controller.set(env_attr, old_val)
+                            carb.log_info(
+                                f"[AirStack] Reset ROS2Context '{node.get_prim_path()}' for fresh DDS participant"
+                            )
+            except Exception as e:
+                carb.log_warn(f"[AirStack] Failed to reset ROS2Context nodes on play: {e}")
+
+            # ── Re-apply lidar near-range overrides ──────────────────────
+            try:
+                from pegasus.simulator.ogn.api.spawn_ouster_lidar import (
+                    apply_lidar_overrides_from_stage,
+                )
+                apply_lidar_overrides_from_stage()
+            except Exception as e:
+                carb.log_warn(f"[AirStack] Failed to apply lidar overrides on play: {e}")
+
     def on_stage_event(self, event):
         if event.type == int(omni.usd.StageEventType.OPENED):
+            # Cancel any in-flight initialisation from a previous stage-open
+            # (e.g. empty stage → saved USD fires two events back-to-back).
+            if hasattr(self, "_init_task") and self._init_task is not None:
+                if not self._init_task.done():
+                    self._init_task.cancel()
+                    carb.log_warn("Cancelled previous world-init task (new stage opened).")
+                self._init_task = None
+
             stage = omni.usd.get_context().get_stage()
             if stage:
                 print("USD Stage opened:", stage.GetRootLayer().realPath)
-                # Add your custom logic here
-                # For example, to print all prims in the stage:
-                # for prim in stage.Traverse():
-                #     print(prim.GetPath())
-                # set the pegasus world to use this stage
-                asyncio.ensure_future(self.set_current_world_to_pegasus_with_physics())
+                self._init_task = asyncio.ensure_future(
+                    self.set_current_world_to_pegasus_with_physics()
+                )
     
     
     async def set_current_world_to_pegasus_with_physics(self):
@@ -121,14 +168,23 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
             carb.log_info("PEGASUS WORLD INITIALIZED")
             print("PEGASUS WORLD INITIALIZED", self.pg._world)
         # else if there was a world but it was missing the physics, then add physics
-        elif self.pg.world.get_physics_context() is None:
-            await self.pg.world.initialize_simulation_context_async()
+        else:
+            try:
+                physics_ctx = self.pg.world.get_physics_context()
+            except Exception:
+                physics_ctx = None
+            if physics_ctx is None:
+                await self.pg.world.initialize_simulation_context_async()
 
         # all must wait until after the world is initialized
 
         # Check if the world settings match the required ones
+        try:
+            _phys_ctx = self.pg.world.get_physics_context()
+        except Exception:
+            _phys_ctx = None
         physics_dt_mismatch = (
-            self.pg.world.get_physics_context() is not None
+            _phys_ctx is not None
             and self.pg.world.get_physics_dt() != self.pg._world_settings["physics_dt"]
         )
         rendering_dt_mismatch = (

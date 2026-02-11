@@ -37,7 +37,7 @@ from pegasus.simulator.logic.graphical_sensors.monocular_camera import Monocular
 
 # Global variables for drone simulation tracking
 drone_sim_dict = {}
-initialized_timeline_callback = False
+timeline = None
 
 
 def timeline_callback(event):
@@ -50,6 +50,13 @@ def timeline_callback(event):
     elif event.type == int(omni.timeline.TimelineEventType.PAUSE):
         pass
     elif event.type == int(omni.timeline.TimelineEventType.STOP):
+        # Stop all backends before clearing the dictionary to prevent zombie processes
+        for node_id, drone_data in drone_sim_dict.items():
+            if 'backend' in drone_data and drone_data['backend']:
+                try:
+                    drone_data['backend'].stop()
+                except Exception as e:
+                    print(f"Error stopping backend for node {node_id}: {e}")
         drone_sim_dict = {}
 
 
@@ -199,16 +206,13 @@ class OgnPegasusMultirotorNodeBase:
     @staticmethod
     def compute_base(db, backend_class, backend_config_class, create_config_func) -> bool:
         """Base compute method that handles common drone spawning and execution"""
-        global drone_sim_dict, initialized_timeline_callback
+        global drone_sim_dict, timeline
 
         # print("DATABASE", db)
         # print("Drone Prim: " + db.inputs.dronePrim)
         # print("Vehicle ID: " + str(db.inputs.vehicleID))
 
-
-        # Initialize timeline callback if not already done
-        if not initialized_timeline_callback:
-            initialized_timeline_callback = True
+        if not timeline:
             timeline = omni.timeline.get_timeline_interface()
             timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
                 int(omni.timeline.TimelineEventType.PLAY), timeline_callback
@@ -220,9 +224,41 @@ class OgnPegasusMultirotorNodeBase:
                 int(omni.timeline.TimelineEventType.STOP), timeline_callback
             )
 
+        # Check if the timeline is actually playing. If not, do NOT initialize anything.
+        if not timeline.is_playing():
+             # If the timeline is not playing, just propagate execution and exit
+            if db.node.get_attribute("outputs:execOut").get_metadata(ogn.MetadataKeys.HIDDEN) != "1":
+                db.outputs.execOut = og.ExecutionAttributeState.ENABLED
+            return True
+
+        # Guard: wait until the World's physics context is fully initialised.
+        # In GUI mode with play-on-start, OnPlaybackTick can fire before the
+        # physics scene is ready, causing add_physics_callback to crash.
+        try:
+            world = World.instance()
+            if world is None or world.get_physics_context() is None:
+                if db.node.get_attribute("outputs:execOut").get_metadata(ogn.MetadataKeys.HIDDEN) != "1":
+                    db.outputs.execOut = og.ExecutionAttributeState.ENABLED
+                return True
+        except Exception:
+            # Physics context not available yet — silently skip this tick
+            if db.node.get_attribute("outputs:execOut").get_metadata(ogn.MetadataKeys.HIDDEN) != "1":
+                db.outputs.execOut = og.ExecutionAttributeState.ENABLED
+            return True
+
         try:
             # Check if we have drone prim input
-            if db.inputs.dronePrim:
+            drone_prim_val = db.inputs.dronePrim
+            if not drone_prim_val:
+                # Log once per node so we can see that compute IS being called
+                node_id = db.node.node_id()
+                if node_id not in getattr(OgnPegasusMultirotorNodeBase, '_warned_empty', set()):
+                    if not hasattr(OgnPegasusMultirotorNodeBase, '_warned_empty'):
+                        OgnPegasusMultirotorNodeBase._warned_empty = set()
+                    OgnPegasusMultirotorNodeBase._warned_empty.add(node_id)
+                    print(f"[Pegasus] compute called but dronePrim is empty/falsy "
+                          f"(value={drone_prim_val!r}).  Waiting for data nodes to resolve...")
+            if drone_prim_val:
                 node_id = db.node.node_id()
                 
                 # Initialize drone if not already done
