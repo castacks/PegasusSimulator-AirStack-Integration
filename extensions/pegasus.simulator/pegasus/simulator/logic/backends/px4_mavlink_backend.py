@@ -483,10 +483,14 @@ class PX4MavlinkBackend(Backend):
         to close any mavlink connection open for this vehicle.
         """
 
+        # Ensure we stop the backend and kill any processes
+        self.stop()
+
         # When this object gets destroyed, close the mavlink connection to free the communication port
         try:
-            self._connection.close()
-            self._connection = None
+            if self._connection:
+                self._connection.close()
+                self._connection = None
         except:
             carb.log_info("Mavlink connection was not closed, because it was never opened")
 
@@ -538,6 +542,11 @@ class PX4MavlinkBackend(Backend):
         """For now does nothing. Here for compatibility purposes only
         """
         return
+        
+    def cleanup(self):
+        """Method that is called when the backend needs to be cleaned up/destroyed
+        """
+        self.stop()
 
     def re_initialize_interface(self):
         """Auxiliar method used to get the MavlinkInterface to reset the MavlinkInterface to its initial state
