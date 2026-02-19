@@ -19,7 +19,7 @@ def spawn_px4_multirotor_node(
     connection_ip: str = "localhost",
     connection_baseport: int = 4560,
     px4_autolaunch: bool = True,
-    px4_dir: str = "/root/PX4-Autopilot",
+    px4_dir: str = "~/PX4-Autopilot",
     px4_vehicle_model: str = "gazebo-classic_iris",
     enable_lockstep: bool = True,
     num_rotors: int = 4,

@@ -118,7 +118,7 @@ class OgnPegasusMultirotorPX4NodeDatabase(og.Database):
             
             # PX4-specific configuration
             ("inputs:px4Autolaunch", "bool", 0, "PX4 Autolaunch", "Whether to automatically launch PX4 in the background.", {}, True, True, False, ""),
-            ("inputs:px4Dir", "string", 0, "PX4 Directory", "Path to PX4 installation directory.", {}, True, "/root/PX4-Autopilot", False, ""),
+            ("inputs:px4Dir", "string", 0, "PX4 Directory", "Path to PX4 installation directory.", {}, True, "~/PX4-Autopilot", False, ""),
             ("inputs:px4VehicleModel", "string", 0, "PX4 Vehicle Model", "PX4 vehicle model name.", {}, True, "gazebo-classic_iris", False, ""),
             
             # Simulation configuration
