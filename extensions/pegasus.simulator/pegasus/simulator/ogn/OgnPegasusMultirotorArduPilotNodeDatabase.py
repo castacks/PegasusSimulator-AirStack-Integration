@@ -94,7 +94,7 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
             # Basic vehicle configuration
             ("inputs:dronePrim", "string", 0, "Drone Prim", "Stage prefix for the drone vehicle.", {}, True, "/World/Quadrotor", False, ""),
             ("inputs:vehicleID", "int", 0, "Vehicle ID", "Unique identifier for the vehicle.", {}, True, 0, False, ""),
-            ("inputs:usdFile", "string", 0, "USD File", "Path to the USD file for the drone model.", {}, True, "/root/Documents/Kit/shared/exts/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd", False, ""),
+            ("inputs:usdFile", "string", 0, "USD File", "Path to the USD file for the drone model.", {}, True, "~/.local/share/ov/data/documents/Kit/shared/exts/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd", False, ""),
             
             # Connection configuration
             ("inputs:connectionType", "string", 0, "Connection Type", "MAVLink connection type (e.g., 'tcpin', 'udp').", {}, True, "tcpin", False, ""),

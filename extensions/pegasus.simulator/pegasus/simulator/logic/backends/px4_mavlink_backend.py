@@ -10,6 +10,7 @@ import carb
 import time
 import numpy as np
 from pymavlink import mavutil
+import os
 
 from pegasus.simulator.logic.state import State
 from pegasus.simulator.logic.backends.backend import Backend, BackendConfig
@@ -221,7 +222,7 @@ class PX4MavlinkBackendConfig(BackendConfig):
 
         # Configure whether to launch px4 in the background automatically or not for every vehicle launched
         self.px4_autolaunch: bool = self.config.get("px4_autolaunch", True)
-        self.px4_dir: str = self.config.get("px4_dir", PegasusInterface().px4_path)
+        self.px4_dir: str = os.path.expanduser(self.config.get("px4_dir", PegasusInterface().px4_path))
         self.px4_vehicle_model: str = self.config.get("px4_vehicle_model", "gazebo-classic_iris")
 
         # Configurations to interpret the rotors control messages coming from mavlink

@@ -1,3 +1,4 @@
+import os
 import omni.graph.core as og
 from isaacsim.core.utils.prims import define_prim, get_prim_at_path
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
@@ -9,7 +10,7 @@ def spawn_px4_multirotor_node(
     pegasus_node_name: str = "PX4Multirotor",
     graph_name: str = "PX4MultirotorGraph",
     drone_prim: str = "/World/Quadrotor",
-    usd_file: str = "/root/Documents/Kit/shared/exts/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd",
+    usd_file: str = "~/.local/share/ov/data/documents/Kit/shared/exts/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd",
     robot_name: str = "robot_1",
     vehicle_id: int = 0,
     domain_id: int = 1,
@@ -57,7 +58,7 @@ def spawn_px4_multirotor_node(
     prim = get_prim_at_path(drone_prim)
     if not prim.IsValid():
         prim = define_prim(drone_prim, "Xform")
-        prim.GetReferences().AddReference(usd_file)
+        prim.GetReferences().AddReference(os.path.expanduser(usd_file))
         # Apply initial transform to Xform prim
         xform = UsdGeom.Xformable(prim)
         xform.ClearXformOpOrder()

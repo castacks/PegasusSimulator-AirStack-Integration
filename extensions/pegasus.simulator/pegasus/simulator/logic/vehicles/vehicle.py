@@ -14,6 +14,7 @@ import carb
 from pxr import Usd, Gf, UsdGeom
 
 # High level Isaac sim APIs
+import os
 import omni.usd
 from isaacsim.core.utils.prims import define_prim, get_prim_at_path
 from omni.usd import get_stage_next_free_path
@@ -82,7 +83,7 @@ class Vehicle(Robot):
             # Spawn the vehicle primitive in the world's stage
             self._prim = define_prim(self._stage_prefix, "Xform")
             self._prim = get_prim_at_path(self._stage_prefix) # TODO: is this necessary?
-            self._prim.GetReferences().AddReference(self._usd_file)
+            self._prim.GetReferences().AddReference(os.path.expanduser(self._usd_file))
         else:
             # Assume the prim already exists in the stage and just get its handle
             self._usd_file = None
