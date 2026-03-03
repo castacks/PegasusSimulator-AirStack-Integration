@@ -252,7 +252,7 @@
         "${workspaceFolder}/app/exts/omni.isaac.partition",
         "${workspaceFolder}/app/exts/omni.isaac.assets_check",
         "${workspaceFolder}/app/exts/omni.isaac.repl",
-        "${workspaceFolder}/app/exts/omni.isaac.ros2_bridge-humble",
+        "${workspaceFolder}/app/exts/omni.isaac.ros2_bridge-jazzy",
         "${workspaceFolder}/app/exts/omni.isaac.statistics_logging",
         "${workspaceFolder}/app/exts/omni.isaac.universal_robots",
         "${workspaceFolder}/app/exts/omni.isaac.demos",
