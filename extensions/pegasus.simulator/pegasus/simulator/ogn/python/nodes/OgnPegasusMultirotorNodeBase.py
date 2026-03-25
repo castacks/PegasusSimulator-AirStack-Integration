@@ -39,11 +39,16 @@ from pegasus.simulator.logic.graphical_sensors.monocular_camera import Monocular
 drone_sim_dict = {}
 timeline = None
 
+# Stored globally so they are not garbage-collected.
+# A GC'd carb subscription is silently cancelled — the callback never fires.
+_timeline_sub_play = None
+_timeline_sub_pause = None
+_timeline_sub_stop = None
+
 
 def timeline_callback(event):
     """Timeline callback to handle simulation events"""
     global drone_sim_dict
-    print("pegasus multirotor base node timeline callback", event, event.type, dir(event))
 
     if event.type == int(omni.timeline.TimelineEventType.PLAY):
         pass
@@ -51,13 +56,39 @@ def timeline_callback(event):
         pass
     elif event.type == int(omni.timeline.TimelineEventType.STOP):
         # Stop all backends before clearing the dictionary to prevent zombie processes
+        world = World.instance()
         for node_id, drone_data in drone_sim_dict.items():
-            if 'backend' in drone_data and drone_data['backend']:
+            backend = drone_data.get('backend')
+            if backend:
                 try:
-                    drone_data['backend'].stop()
+                    backend.stop()
+                    carb.log_info(f"[Pegasus] Stopped backend for node {node_id}")
                 except Exception as e:
-                    print(f"Error stopping backend for node {node_id}: {e}")
+                    carb.log_warn(f"[Pegasus] Error stopping backend for node {node_id}: {e}")
+
+            # Remove the Vehicle's physics/timeline/render callbacks so they
+            # don't conflict when compute_base re-creates the drone on Play.
+            multirotor = drone_data.get('multirotor')
+            if multirotor and world is not None:
+                prefix = getattr(multirotor, '_stage_prefix', '')
+                if prefix:
+                    for suffix in ["/state", "/update", "/Sensors", "/mav_state"]:
+                        try:
+                            world.remove_physics_callback(prefix + suffix)
+                        except Exception:
+                            pass
+                    try:
+                        world.remove_timeline_callback(prefix + "/start_stop_sim")
+                    except Exception:
+                        pass
+                    try:
+                        world.remove_render_callback(prefix + "/GraphicalSensors")
+                    except Exception:
+                        pass
+
+        num_cleared = len(drone_sim_dict)
         drone_sim_dict = {}
+        carb.log_info(f"[Pegasus] Timeline STOP: cleared {num_cleared} drone(s)")
 
 
 class OgnPegasusMultirotorNodeBaseState:
@@ -207,20 +238,17 @@ class OgnPegasusMultirotorNodeBase:
     def compute_base(db, backend_class, backend_config_class, create_config_func) -> bool:
         """Base compute method that handles common drone spawning and execution"""
         global drone_sim_dict, timeline
-
-        # print("DATABASE", db)
-        # print("Drone Prim: " + db.inputs.dronePrim)
-        # print("Vehicle ID: " + str(db.inputs.vehicleID))
+        global _timeline_sub_play, _timeline_sub_pause, _timeline_sub_stop
 
         if not timeline:
             timeline = omni.timeline.get_timeline_interface()
-            timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
+            _timeline_sub_play = timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
                 int(omni.timeline.TimelineEventType.PLAY), timeline_callback
             )
-            timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
+            _timeline_sub_pause = timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
                 int(omni.timeline.TimelineEventType.PAUSE), timeline_callback
             )
-            timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
+            _timeline_sub_stop = timeline.get_timeline_event_stream().create_subscription_to_pop_by_type(
                 int(omni.timeline.TimelineEventType.STOP), timeline_callback
             )
 
@@ -237,11 +265,24 @@ class OgnPegasusMultirotorNodeBase:
         try:
             world = World.instance()
             if world is None or world.get_physics_context() is None:
+                node_id = db.node.node_id()
+                if node_id not in getattr(OgnPegasusMultirotorNodeBase, '_warned_no_world', set()):
+                    if not hasattr(OgnPegasusMultirotorNodeBase, '_warned_no_world'):
+                        OgnPegasusMultirotorNodeBase._warned_no_world = set()
+                    OgnPegasusMultirotorNodeBase._warned_no_world.add(node_id)
+                    reason = "World is None" if world is None else "physics context is None"
+                    print(f"[Pegasus] compute_base skipping — {reason}. "
+                          f"Waiting for extension to initialise World...")
                 if db.node.get_attribute("outputs:execOut").get_metadata(ogn.MetadataKeys.HIDDEN) != "1":
                     db.outputs.execOut = og.ExecutionAttributeState.ENABLED
                 return True
-        except Exception:
-            # Physics context not available yet — silently skip this tick
+        except Exception as e:
+            node_id = db.node.node_id()
+            if node_id not in getattr(OgnPegasusMultirotorNodeBase, '_warned_no_world', set()):
+                if not hasattr(OgnPegasusMultirotorNodeBase, '_warned_no_world'):
+                    OgnPegasusMultirotorNodeBase._warned_no_world = set()
+                OgnPegasusMultirotorNodeBase._warned_no_world.add(node_id)
+                print(f"[Pegasus] compute_base skipping — physics context error: {e}")
             if db.node.get_attribute("outputs:execOut").get_metadata(ogn.MetadataKeys.HIDDEN) != "1":
                 db.outputs.execOut = og.ExecutionAttributeState.ENABLED
             return True

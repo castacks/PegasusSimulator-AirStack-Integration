@@ -148,23 +148,85 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
                 self._init_task = None
 
             stage = omni.usd.get_context().get_stage()
-            if stage:
-                print("USD Stage opened:", stage.GetRootLayer().realPath)
-                self._init_task = asyncio.ensure_future(
-                    self.set_current_world_to_pegasus_with_physics()
-                )
+            if not stage:
+                return
+
+            real_path = stage.GetRootLayer().realPath
+            if not real_path:
+                # This extension should stay out of the way of 
+                # other launching methods that create their own World.
+                print("USD Stage opened: (anonymous stage, skipping world init)")
+                return
+
+            print("USD Stage opened:", real_path)
+            self._init_task = asyncio.ensure_future(
+                self.set_current_world_to_pegasus_with_physics()
+            )
     
     
+    async def _wait_for_stage_loading(self, timeout_frames: int = 200) -> bool:
+        """Poll until the USD stage has finished loading all assets."""
+        app = omni.kit.app.get_app()
+        ctx = omni.usd.get_context()
+        for _ in range(timeout_frames):
+            await app.next_update_async()
+            _, _, is_loading = ctx.get_stage_loading_status()
+            if not is_loading:
+                return True
+        carb.log_warn("Timed out waiting for stage to finish loading")
+        return False
+
+    async def _wait_for_world_ready(self, timeout_frames: int = 200) -> bool:
+        """Poll until World.instance() returns a valid World with a physics context."""
+        app = omni.kit.app.get_app()
+        for _ in range(timeout_frames):
+            await app.next_update_async()
+            try:
+                w = World.instance()
+                if w is not None and w.get_physics_context() is not None:
+                    return True
+            except Exception:
+                pass
+        carb.log_warn("Timed out waiting for World to become ready")
+        return False
+
     async def set_current_world_to_pegasus_with_physics(self):
-        # set the pegasus world to use the current stage
+        app = omni.kit.app.get_app()
+        timeline = omni.timeline.get_timeline_interface()
+
+        # Wait until the stage has finished loading all assets (textures, MDLs,
+        # sub-USDs, etc.) before doing any heavy initialisation.
+        await self._wait_for_stage_loading()
+
+        if asyncio.current_task() and asyncio.current_task().cancelled():
+            return
+
+        # Remember whether the timeline was playing before we touch the World.
+        # World() / initialize_world() internally stops the timeline, so we
+        # need to restore playback state after initialisation completes.
+        was_playing = timeline.is_playing()
+
         self.pg._world = World.instance()
 
         # if the world was None even after we set it, then initialize it
         if self.pg.world is None:
             carb.log_warn("The world is None")
             self.pg._world_settings = DEFAULT_WORLD_SETTINGS
-            # we need to wait for this to be initialized before continuing
+
+            # initialize_world() does heavy synchronous work that briefly blocks
+            # the asyncio loop.
+            loop = asyncio.get_event_loop()
+            orig_handler = loop.get_exception_handler()
+            loop.set_exception_handler(lambda l, ctx: None)
+
+            await app.next_update_async()
             await self.pg.initialize_world()
+
+            loop.set_exception_handler(orig_handler)
+
+            # Wait until the newly created World is fully ready.
+            await self._wait_for_world_ready()
+
             carb.log_info("PEGASUS WORLD INITIALIZED")
             print("PEGASUS WORLD INITIALIZED", self.pg._world)
         # else if there was a world but it was missing the physics, then add physics
@@ -174,9 +236,28 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
             except Exception:
                 physics_ctx = None
             if physics_ctx is None:
+
+                # add physics to the world with synchronous call
+                loop = asyncio.get_event_loop()
+                orig_handler = loop.get_exception_handler()
+                loop.set_exception_handler(lambda l, ctx: None)
+
+                await app.next_update_async()
                 await self.pg.world.initialize_simulation_context_async()
 
-        # all must wait until after the world is initialized
+                loop.set_exception_handler(orig_handler)
+
+                # wait until the world is ready
+                await self._wait_for_world_ready()
+
+        # Restore timeline playback if it was playing before World init stopped it
+        if was_playing and not timeline.is_playing():
+            carb.log_info("Restoring timeline playback after World initialisation")
+            timeline.play()
+
+        if self.pg.world is None:
+            carb.log_warn("World still None after initialisation — skipping settings check")
+            return
 
         # Check if the world settings match the required ones
         try:
