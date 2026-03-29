@@ -103,11 +103,9 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
         )
 
     def _on_timeline_event(self, event):
-        """Called on every timeline event.  On PLAY we:
-        1. Re-apply lidar near-range overrides from USD custom attributes.
-        2. Reset every ROS2Context node so a fresh DDS participant is created
-           (the old uint64 pointer is stale after a USD save/reload or
-           Stop→Play cycle).
+        """Called on every timeline event.  On PLAY we reset every
+        ROS2Context node so a fresh DDS participant is created (the old
+        uint64 pointer is stale after a USD save/reload or Stop→Play cycle).
         """
         if event.type == int(omni.timeline.TimelineEventType.PLAY):
             # ── Reset ROS2Context nodes ──────────────────────────────────
@@ -127,15 +125,6 @@ class Pegasus_SimulatorExtension(omni.ext.IExt):
                             )
             except Exception as e:
                 carb.log_warn(f"[AirStack] Failed to reset ROS2Context nodes on play: {e}")
-
-            # ── Re-apply lidar near-range overrides ──────────────────────
-            try:
-                from pegasus.simulator.ogn.api.spawn_ouster_lidar import (
-                    apply_lidar_overrides_from_stage,
-                )
-                apply_lidar_overrides_from_stage()
-            except Exception as e:
-                carb.log_warn(f"[AirStack] Failed to apply lidar overrides on play: {e}")
 
     def on_stage_event(self, event):
         if event.type == int(omni.usd.StageEventType.OPENED):

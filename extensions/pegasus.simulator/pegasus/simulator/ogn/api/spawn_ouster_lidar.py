@@ -1,3 +1,15 @@
+"""
+.. deprecated::
+    This module uses the legacy Ouster USD reference + JSON config patching
+    approach for lidar near-range overrides.  It is superseded by
+    :mod:`pegasus.simulator.ogn.api.spawn_rtx_lidar`, which uses Isaac Sim
+    5.0+ OmniLidar prims with ``omni:sensor:Core:nearRangeM`` set directly
+    on the sensor prim.
+
+    Kept for backward compatibility with saved USD files that carry the
+    ``pegasus:lidarMinRange`` custom attribute.
+"""
+
 import json
 import os
 import re

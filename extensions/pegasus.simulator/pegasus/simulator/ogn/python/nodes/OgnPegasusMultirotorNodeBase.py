@@ -18,8 +18,8 @@ import omni.usd
 import omni.replicator.core as rep
 import omni.timeline
 import usdrt.Sdf
-from omni.isaac.core.prims import GeometryPrim, RigidPrim, XFormPrim
-from omni.isaac.core.utils import extensions, stage
+from isaacsim.core.prims import SingleGeometryPrim as GeometryPrim, SingleRigidPrim as RigidPrim, SingleXFormPrim as XFormPrim
+from isaacsim.core.utils import extensions, stage
 from omni.isaac.core.world import World
 from pxr import Gf, Usd, UsdGeom
 import time
