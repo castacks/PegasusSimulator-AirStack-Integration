@@ -8,8 +8,6 @@ profile, not as a Core prim attribute—those are left to Isaac defaults).
 
 For self-hits, tune ``min_range``, mount offset, ROS / VDB filtering
 (``min_sensor_range``), or edit the RTX lidar profile JSON under the Isaac install.
-
-Replaces the deprecated ``spawn_ouster_lidar.py`` approach.
 """
 
 import omni.graph.core as og
@@ -18,6 +16,63 @@ from omni.physx.scripts import utils as physx_utils
 import omni
 import carb
 from isaacsim.core.utils.prims import set_targets
+
+
+def _rtx_lidar_render_product_prim_path(
+    stage, lidar_container_path: str, command_return_path: str
+) -> str:
+    """Resolve prim path for ``IsaacCreateRenderProduct`` / RTX lidar.
+
+    Vendor OmniLidar USD (e.g. OS1) usually nests the actual RTX camera under
+    ``<container>/sensor``. ``IsaacSensorCreateRtxLidar`` may return either the
+    container or the leaf; targeting the wrong prim breaks the graph (no hits).
+    """
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for p in (
+        f"{lidar_container_path}/sensor",
+        f"{lidar_container_path}/Sensor",
+        f"{command_return_path}/sensor",
+        f"{command_return_path}/Sensor",
+        command_return_path,
+    ):
+        if p not in seen:
+            seen.add(p)
+            candidates.append(p)
+    for path in candidates:
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            carb.log_info(f"[RTX LiDAR] Render product source prim: '{path}'")
+            return path
+    carb.log_warn(
+        f"[RTX LiDAR] No valid sensor prim among {candidates!r}; "
+        f"using '{command_return_path}'"
+    )
+    return command_return_path
+
+
+def _set_rtx_create_render_camera_prim(
+    stage, parent_graph_path: str, subgraph_name: str, create_render_name: str, sensor_prim_path: str
+) -> bool:
+    """Wire ``inputs:cameraPrim`` on ``IsaacCreateRenderProduct`` (compound subgraph layout varies by Kit)."""
+    base = f"{parent_graph_path}/{subgraph_name}"
+    for rel in (f"{base}/Subgraph/{create_render_name}", f"{base}/{create_render_name}"):
+        prim = stage.GetPrimAtPath(rel)
+        if prim.IsValid():
+            set_targets(
+                prim=prim,
+                attribute="inputs:cameraPrim",
+                target_prim_paths=[sensor_prim_path],
+            )
+            carb.log_info(
+                f"[RTX LiDAR] inputs:cameraPrim on '{rel}' -> '{sensor_prim_path}'"
+            )
+            return True
+    carb.log_error(
+        f"[RTX LiDAR] IsaacCreateRenderProduct node not found under '{base}' "
+        f"(tried Subgraph/ and flat layout)."
+    )
+    return False
 
 
 # ─── RTX Lidar Config Name Aliases ──────────────────────────────────────
@@ -73,8 +128,8 @@ def attach_rtx_lidar_to_drone(
             Isaac Sim model name (e.g. ``"OS1"``).
         lidar_offset: ``[x, y, z]`` translation offset relative to the drone.
         lidar_rotation_offset: ``[roll, pitch, yaw]`` in degrees.
-        frame_id: ROS frame ID (unused for prim naming here, kept for API
-            consistency with the Ouster path).
+        frame_id: ROS ``frame_id`` for published point clouds (wired in the
+            OmniGraph subgraph).
         min_range: Minimum detection range in metres.  Set > 0 to set
             ``omni:sensor:Core:nearRangeM`` when present on the sensor prim.
         lidar_variant: Model variant string (e.g. ``"OS1_REV6_128ch10hz512res"``).
@@ -146,7 +201,7 @@ def attach_rtx_lidar_to_drone(
     user_quat = combined_rot.GetQuat()
 
     # Corrective rotation to align OmniLidar's local axes (Z-forward) with
-    # the ROS/drone frame — identical to the correction in spawn_ouster_lidar.py.
+    # the ROS/drone frame.
     corrective_quat = Gf.Rotation(Gf.Vec3d(0, 0, 1), 90).GetQuat()
     user_rot = Gf.Quatf(user_quat.GetReal(), *user_quat.GetImaginary())
     corrective_rot = Gf.Quatf(corrective_quat.GetReal(), *corrective_quat.GetImaginary())
@@ -202,14 +257,14 @@ def attach_rtx_lidar_to_drone(
 def add_rtx_lidar_subgraph(
     parent_graph_handle: og._omni_graph_core.Graph,
     drone_prim: str,
-    lidar_name: str = "OusterLidar",
+    lidar_name: str = "Lidar",
     lidar_config: str = DEFAULT_LIDAR_CONFIG,
     lidar_variant: str = "",
     lidar_topic_name: str = "point_cloud",
     lidar_offset: list[float] = [0.0, 0.0, 0.025],
     lidar_rotation_offset: list[float] = [0.0, 0.0, 0.0],
-    lidar_topic_namespace: str = "sensors/lidar",
-    lidar_frame_id: str = "lidar",
+    lidar_topic_namespace: str = "sensors/ouster",
+    lidar_frame_id: str = "ouster",
     robot_name: str = "robot_1",
     min_range: float = 0.0,
     ros2_context_node: str | None = None,
@@ -258,6 +313,12 @@ def add_rtx_lidar_subgraph(
     if sensor_path is None:
         carb.log_error("LiDAR attachment failed; aborting subgraph creation.")
         return
+
+    stage = omni.usd.get_context().get_stage()
+    lidar_container_path = f"{drone_prim.rstrip('/')}/{lidar_name}"
+    render_prim_path = _rtx_lidar_render_product_prim_path(
+        stage, lidar_container_path, sensor_path
+    )
 
     controller = og.Controller()
     parent_graph_path = parent_graph_handle.get_path_to_graph()
@@ -309,16 +370,12 @@ def add_rtx_lidar_subgraph(
     )
 
     # ── Step 1.5: set cameraPrim via USD relationship ──
-    # inputs:cameraPrim is a USD target (relationship) that cannot be set
-    # via SET_VALUES inside compound subgraphs.  Compound subgraphs place
-    # nodes under an implicit "Subgraph" child.
-    render_node_path = f"{parent_graph_path}/{subgraph_name}/Subgraph/{create_render}"
-    stage = omni.usd.get_context().get_stage()
-    set_targets(
-        prim=stage.GetPrimAtPath(render_node_path),
-        attribute="inputs:cameraPrim",
-        target_prim_paths=[sensor_path],
-    )
+    # inputs:cameraPrim is a USD target; compound subgraphs may nest under
+    # ``Subgraph/`` or flat — try both. Target the nested ``sensor`` prim when present.
+    if not _set_rtx_create_render_camera_prim(
+        stage, parent_graph_path, subgraph_name, create_render, render_prim_path
+    ):
+        return
 
     # ── Step 2: wire parent ROS2Context → promoted context input ──
     controller.edit(
