@@ -1,0 +1,11 @@
+# Extra defaults for ArduPilot SITL when MAVROS connects on SERIAL0 (TCP).
+# Without these, some builds default stream rates to 0 on the GCS port and
+# MAVROS never receives LOCAL_POSITION_NED / ATTITUDE → no local_position/odom
+# on the robot → odometry_conversion publishes no map→base_link TF.
+#
+# Tune per vehicle; values are Hz (ArduPilot Copter 4.6 SR0_* parameters).
+SR0_POSITION 10
+SR0_EXTRA1 10
+SR0_EXTRA2 10
+SR0_RAW_SENS 5
+SR0_EXT_STAT 2

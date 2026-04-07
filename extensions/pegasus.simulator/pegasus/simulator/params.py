@@ -85,7 +85,7 @@ WORLD_SETTINGS = {
         "physics_prim_path": "/World/PhysicsScene" 
     },
     'ardupilot': {
-        "physics_dt": 1.0 / 800.0, # Reach communication of 250hz with ardupilot sitl
+        "physics_dt": 1.0 / 800.0,  # 800 Hz physics → sensors at 400 Hz → ArduCopter 400 Hz main loop
         "stage_units_in_meters": 1.0,
         "rendering_dt": 1.0 / 120.0,
         "device": "cpu",
@@ -99,7 +99,8 @@ WORLD_SETTINGS = {
         "physics_prim_path": "/World/PhysicsScene"
     }
 }
-DEFAULT_WORLD_SETTINGS = WORLD_SETTINGS['px4']
+# ArduPilot needs 800 Hz physics for its 400 Hz main loop; PX4 is fine at 800 Hz too.
+DEFAULT_WORLD_SETTINGS = WORLD_SETTINGS['ardupilot']
 
 # Define where the thumbnail of the vehicle is located
 THUMBNAIL = ROBOTS_ASSETS + "/Iris/iris_thumbnail.png"

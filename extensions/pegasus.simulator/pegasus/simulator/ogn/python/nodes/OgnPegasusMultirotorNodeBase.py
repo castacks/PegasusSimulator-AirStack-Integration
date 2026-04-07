@@ -34,6 +34,7 @@ from pegasus.simulator.logic.backends import Backend, BackendConfig
 from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 from pegasus.simulator.logic.vehicle_manager import VehicleManager
 from pegasus.simulator.logic.graphical_sensors.monocular_camera import MonocularCamera
+from pegasus.simulator.logic.sensors import Barometer, IMU, Magnetometer, GPS
 
 # Global variables for drone simulation tracking
 drone_sim_dict = {}
@@ -200,11 +201,19 @@ class OgnPegasusMultirotorNodeBase:
         raise NotImplementedError("This method should be overridden by specific backend nodes")
 
     @staticmethod
-    def create_multirotor(db, backend):
+    def create_multirotor(db, backend, sensor_update_rate: float = 250.0):
         """Create multirotor vehicle with the given backend without validation for scalability"""
-        # Create multirotor configuration
         multirotor_config = MultirotorConfig()
         multirotor_config.backends = [backend]
+
+        # Override sensor update rates so they match the backend's required loop rate.
+        # ArduCopter needs ≥400 Hz; default MultirotorConfig sensors are 250 Hz.
+        multirotor_config.sensors = [
+            Barometer({"update_rate": sensor_update_rate}),
+            IMU({"update_rate": sensor_update_rate}),
+            Magnetometer({"update_rate": sensor_update_rate}),
+            GPS({"update_rate": 50.0}),
+        ]
 
         # Get USD file from input parameter
         selected_usd_file = db.inputs.usdFile
@@ -305,13 +314,26 @@ class OgnPegasusMultirotorNodeBase:
                 # Initialize drone if not already done
                 if node_id not in drone_sim_dict.keys():
                     print(f'Creating new drone with VEHICLE ID: {db.inputs.vehicleID}')
-                    
+
+                    # Ensure physics step is fast enough for the backend.
+                    # ArduCopter needs ≥400 Hz sensor data → physics_dt ≤ 1/800.
+                    required_dt = WORLD_SETTINGS.get('ardupilot', {}).get('physics_dt', 1.0 / 800.0)
+                    current_dt = world.get_physics_dt()
+                    if current_dt > required_dt * 1.01:
+                        rendering_dt = WORLD_SETTINGS.get('ardupilot', {}).get('rendering_dt', 1.0 / 120.0)
+                        print(f"[Pegasus] Physics dt {current_dt:.6f}s too slow "
+                              f"(need ≤{required_dt:.6f}s). Updating to {required_dt:.6f}s")
+                        world.set_simulation_dt(physics_dt=required_dt, rendering_dt=rendering_dt)
+
                     # Create backend configuration using the provided function
                     backend_config = create_config_func(db)
                     backend = backend_class(config=backend_config)
 
+                    # Sensor update rates must match the backend's expected loop rate
+                    sensor_rate = getattr(backend_config, "update_rate", 250.0)
+
                     # Create multirotor vehicle
-                    multirotor, multirotor_config = OgnPegasusMultirotorNodeBase.create_multirotor(db, backend)
+                    multirotor, multirotor_config = OgnPegasusMultirotorNodeBase.create_multirotor(db, backend, sensor_update_rate=sensor_rate)
 
                     # Store drone simulation data
                     drone_sim_dict[node_id] = {

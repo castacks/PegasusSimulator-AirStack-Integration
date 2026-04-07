@@ -38,7 +38,7 @@ ARDUPILOT_FIELDS = [
     "USD_FILE",
     "CONNECTION_TYPE",
     "CONNECTION_IP",
-    "CONNECTION_BASEPORT",
+    "ROS_DOMAIN_ID",
     "ARDUPILOT_AUTOLAUNCH",
     "ARDUPILOT_DIR",
     "ARDUPILOT_VEHICLE_MODEL",
@@ -53,18 +53,14 @@ ARDUPILOT_FIELDS = [
     "INPUT_SCALING_1",
     "INPUT_SCALING_2",
     "INPUT_SCALING_3",
+    # Must match INTERFACE and _batchedReadAttributes order (PWM + FDM before zeroPositionArmed*)
+    "INPUT_MIN",
+    "INPUT_MAX",
+    "FDM_BASE_PORT",
     "ZERO_POSITION_ARMED_0",
     "ZERO_POSITION_ARMED_1",
     "ZERO_POSITION_ARMED_2",
     "ZERO_POSITION_ARMED_3",
-    "INPUT_MIN_0",
-    "INPUT_MIN_1",
-    "INPUT_MIN_2",
-    "INPUT_MIN_3",
-    "INPUT_MAX_0",
-    "INPUT_MAX_1",
-    "INPUT_MAX_2",
-    "INPUT_MAX_3",
 ]
 
 # Dynamically create the IntEnum class
@@ -96,20 +92,20 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
             ("inputs:vehicleID", "int", 0, "Vehicle ID", "Unique identifier for the vehicle.", {}, True, 0, False, ""),
             ("inputs:usdFile", "string", 0, "USD File", "Path to the USD file for the drone model.", {}, True, "~/.local/share/ov/data/documents/Kit/shared/exts/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd", False, ""),
             
-            # Connection configuration
-            ("inputs:connectionType", "string", 0, "Connection Type", "MAVLink connection type (e.g., 'tcpin', 'udp').", {}, True, "tcpin", False, ""),
-            ("inputs:connectionIP", "string", 0, "Connection IP", "IP address for MAVLink connection.", {}, True, "localhost", False, ""),
-            ("inputs:connectionBaseport", "int", 0, "Connection Base Port", "Base port for MAVLink connection.", {}, True, 4560, False, ""),
+            # Connection configuration (defaults match ArduPilotMavlinkBackend + ArduPilotLaunchTool)
+            ("inputs:connectionType", "string", 0, "Connection Type", "MAVLink connection type (e.g., 'udpin').", {}, True, "udpin", False, ""),
+            ("inputs:connectionIP", "string", 0, "Connection IP", "IP address for MAVLink connection.", {}, True, "127.0.0.1", False, ""),
+            ("inputs:rosDomainId", "int", 0, "ROS Domain ID", "MAVLink UDP listen port = ONBOARD_BASE_PORT (env, default 14580) + rosDomainId (matches interface.launch.py ONBOARD_BASE_PORT + ROS_DOMAIN_ID).", {}, True, 0, False, ""),
             
             # ArduPilot-specific configuration
             ("inputs:ardupilotAutolaunch", "bool", 0, "ArduPilot Autolaunch", "Whether to automatically launch ArduPilot in the background.", {}, True, True, False, ""),
-            ("inputs:ardupilotDir", "string", 0, "ArduPilot Directory", "Path to ArduPilot installation directory.", {}, True, "/root/ardupilot", False, ""),
+            ("inputs:ardupilotDir", "string", 0, "ArduPilot Directory", "Path to ArduPilot installation directory.", {}, True, "/isaac-sim/ardupilot", False, ""),
             ("inputs:ardupilotVehicleModel", "string", 0, "ArduPilot Vehicle Model", "ArduPilot vehicle model name.", {}, True, "gazebo-iris", False, ""),
             
             # Simulation configuration
-            ("inputs:enableLockstep", "bool", 0, "Enable Lockstep", "Enable lockstep simulation mode.", {}, True, True, False, ""),
+            ("inputs:enableLockstep", "bool", 0, "Enable Lockstep", "Enable lockstep simulation mode.", {}, True, False, False, ""),
             ("inputs:numRotors", "int", 0, "Number of Rotors", "Number of rotors on the vehicle.", {}, True, 4, False, ""),
-            ("inputs:updateRate", "double", 0, "Update Rate", "Backend update frequency in Hz.", {}, True, 250.0, False, ""),
+            ("inputs:updateRate", "double", 0, "Update Rate", "Backend update frequency in Hz.", {}, True, 400.0, False, ""),
             
             # Input configuration arrays (4 rotors)
             ("inputs:inputOffset0", "double", 0, "Input Offset 0", "Input offset for rotor 0.", {}, True, 0.0, False, ""),
@@ -122,17 +118,10 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
             ("inputs:inputScaling2", "double", 0, "Input Scaling 2", "Input scaling factor for rotor 2.", {}, True, 1000.0, False, ""),
             ("inputs:inputScaling3", "double", 0, "Input Scaling 3", "Input scaling factor for rotor 3.", {}, True, 1000.0, False, ""),
             
-            # ArduPilot-specific input min/max arrays
-            ("inputs:inputMin0", "double", 0, "Input Min 0", "Minimum input value for rotor 0.", {}, True, 1000.0, False, ""),
-            ("inputs:inputMin1", "double", 0, "Input Min 1", "Minimum input value for rotor 1.", {}, True, 1000.0, False, ""),
-            ("inputs:inputMin2", "double", 0, "Input Min 2", "Minimum input value for rotor 2.", {}, True, 1000.0, False, ""),
-            ("inputs:inputMin3", "double", 0, "Input Min 3", "Minimum input value for rotor 3.", {}, True, 1000.0, False, ""),
-            
-            ("inputs:inputMax0", "double", 0, "Input Max 0", "Maximum input value for rotor 0.", {}, True, 2000.0, False, ""),
-            ("inputs:inputMax1", "double", 0, "Input Max 1", "Maximum input value for rotor 1.", {}, True, 2000.0, False, ""),
-            ("inputs:inputMax2", "double", 0, "Input Max 2", "Maximum input value for rotor 2.", {}, True, 2000.0, False, ""),
-            ("inputs:inputMax3", "double", 0, "Input Max 3", "Maximum input value for rotor 3.", {}, True, 2000.0, False, ""),
-            
+            ("inputs:inputMin", "int", 0, "Input Min", "Minimum PWM for ArduPilot servo normalization (all rotors).", {}, True, 1000, False, ""),
+            ("inputs:inputMax", "int", 0, "Input Max", "Maximum PWM for ArduPilot servo normalization (all rotors).", {}, True, 2000, False, ""),
+            ("inputs:fdmBasePort", "int", 0, "FDM Base Port", "Base UDP port for JSON FDM; bind port = base + vehicleID*10.", {}, True, 9002, False, ""),
+
             ("inputs:zeroPositionArmed0", "double", 0, "Zero Position Armed 0", "Zero position when armed for rotor 0.", {}, True, 100.0, False, ""),
             ("inputs:zeroPositionArmed1", "double", 0, "Zero Position Armed 1", "Zero position when armed for rotor 1.", {}, True, 100.0, False, ""),
             ("inputs:zeroPositionArmed2", "double", 0, "Zero Position Armed 2", "Zero position when armed for rotor 2.", {}, True, 100.0, False, ""),
@@ -153,12 +142,11 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
 
     class ValuesForInputs(og.DynamicAttributeAccess):
         LOCAL_PROPERTY_NAMES = {
-            "execIn", "dronePrim", "vehicleID", "usdFile", "connectionType", "connectionIP", "connectionBaseport",
+            "execIn", "dronePrim", "vehicleID", "usdFile", "connectionType", "connectionIP", "rosDomainId",
             "ardupilotAutolaunch", "ardupilotDir", "ardupilotVehicleModel", "enableLockstep", "numRotors", "updateRate",
             "inputOffset0", "inputOffset1", "inputOffset2", "inputOffset3",
             "inputScaling0", "inputScaling1", "inputScaling2", "inputScaling3",
-            "inputMin0", "inputMin1", "inputMin2", "inputMin3",
-            "inputMax0", "inputMax1", "inputMax2", "inputMax3",
+            "inputMin", "inputMax", "fdmBasePort",
             "zeroPositionArmed0", "zeroPositionArmed1", "zeroPositionArmed2", "zeroPositionArmed3",
             "_setting_locked", "_batchedReadAttributes", "_batchedReadValues",
         }
@@ -169,12 +157,11 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
             context = node.get_graph().get_default_graph_context()
             super().__init__(context, node, attributes, dynamic_attributes)
             self._batchedReadAttributes = [getattr(self._attributes, name) for name in [
-                "execIn", "dronePrim", "vehicleID", "usdFile", "connectionType", "connectionIP", "connectionBaseport",
+                "execIn", "dronePrim", "vehicleID", "usdFile", "connectionType", "connectionIP", "rosDomainId",
                 "ardupilotAutolaunch", "ardupilotDir", "ardupilotVehicleModel", "enableLockstep", "numRotors", "updateRate",
                 "inputOffset0", "inputOffset1", "inputOffset2", "inputOffset3",
                 "inputScaling0", "inputScaling1", "inputScaling2", "inputScaling3",
-                "inputMin0", "inputMin1", "inputMin2", "inputMin3",
-                "inputMax0", "inputMax1", "inputMax2", "inputMax3",
+                "inputMin", "inputMax", "fdmBasePort",
                 "zeroPositionArmed0", "zeroPositionArmed1", "zeroPositionArmed2", "zeroPositionArmed3"
             ]]
             self._batchedReadValues = [None] * len(self._batchedReadAttributes)
@@ -211,9 +198,9 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
         def connectionIP(self, value): self._batchedReadValues[ArduPilotInputIndex.CONNECTION_IP] = value
 
         @property
-        def connectionBaseport(self): return self._batchedReadValues[ArduPilotInputIndex.CONNECTION_BASEPORT]
-        @connectionBaseport.setter
-        def connectionBaseport(self, value): self._batchedReadValues[ArduPilotInputIndex.CONNECTION_BASEPORT] = value
+        def rosDomainId(self): return self._batchedReadValues[ArduPilotInputIndex.ROS_DOMAIN_ID]
+        @rosDomainId.setter
+        def rosDomainId(self, value): self._batchedReadValues[ArduPilotInputIndex.ROS_DOMAIN_ID] = value
 
         @property
         def ardupilotAutolaunch(self): return self._batchedReadValues[ArduPilotInputIndex.ARDUPILOT_AUTOLAUNCH]
@@ -287,47 +274,20 @@ class OgnPegasusMultirotorArduPilotNodeDatabase(og.Database):    # Imprint the g
         @inputScaling3.setter
         def inputScaling3(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_SCALING_3] = value
 
-        # Input min properties
         @property
-        def inputMin0(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_0]
-        @inputMin0.setter
-        def inputMin0(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_0] = value
+        def inputMin(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN]
+        @inputMin.setter
+        def inputMin(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN] = value
 
         @property
-        def inputMin1(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_1]
-        @inputMin1.setter
-        def inputMin1(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_1] = value
+        def inputMax(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX]
+        @inputMax.setter
+        def inputMax(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX] = value
 
         @property
-        def inputMin2(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_2]
-        @inputMin2.setter
-        def inputMin2(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_2] = value
-
-        @property
-        def inputMin3(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_3]
-        @inputMin3.setter
-        def inputMin3(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MIN_3] = value
-
-        # Input max properties
-        @property
-        def inputMax0(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_0]
-        @inputMax0.setter
-        def inputMax0(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_0] = value
-
-        @property
-        def inputMax1(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_1]
-        @inputMax1.setter
-        def inputMax1(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_1] = value
-
-        @property
-        def inputMax2(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_2]
-        @inputMax2.setter
-        def inputMax2(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_2] = value
-
-        @property
-        def inputMax3(self): return self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_3]
-        @inputMax3.setter
-        def inputMax3(self, value): self._batchedReadValues[ArduPilotInputIndex.INPUT_MAX_3] = value
+        def fdmBasePort(self): return self._batchedReadValues[ArduPilotInputIndex.FDM_BASE_PORT]
+        @fdmBasePort.setter
+        def fdmBasePort(self, value): self._batchedReadValues[ArduPilotInputIndex.FDM_BASE_PORT] = value
 
         # Zero position armed properties
         @property

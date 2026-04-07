@@ -85,7 +85,11 @@ class Multirotor(Vehicle):
             config (MultirotorConfig, optional): Defaults to MultirotorConfig().
         """
 
-        # 1. Initiate the Vehicle object itself
+        # Dynamics before Vehicle.__init__: if backend.start() fails during Vehicle init (e.g. autolaunch),
+        # physics callbacks may still run; Multirotor.update must not AttributeError on _thrusters.
+        self._thrusters = config.thrust_curve
+        self._drag = config.drag
+
         super().__init__(
             stage_prefix,
             usd_file,
@@ -98,10 +102,6 @@ class Multirotor(Vehicle):
             config.backends,
             spawn_prim,
         )
-
-        # 2. Setup the dynamics of the system - get the thrust curve of the vehicle from the configuration
-        self._thrusters = config.thrust_curve
-        self._drag = config.drag
     
     def __str__(self):
         """String representation of the multirotor.

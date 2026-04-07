@@ -3,6 +3,7 @@ ArduPilot-specific Pegasus Multirotor OmniGraph node.
 Extends the base multirotor node with ArduPilot-specific backend configuration.
 """
 
+import os
 import sys
 import traceback
 import omni.graph.core as og
@@ -53,10 +54,12 @@ class OgnPegasusMultirotorArduPilotNode:
             # Vehicle identification
             "vehicle_id": db.inputs.vehicleID,
             
-            # MAVLink connection configuration
+            # MAVLink connection configuration (listen port = ONBOARD_BASE_PORT + ros_domain_id)
             "connection_type": db.inputs.connectionType,        # e.g., "tcpin", "udp"
             "connection_ip": db.inputs.connectionIP,            # e.g., "localhost"
-            "connection_baseport": db.inputs.connectionBaseport, # e.g., 4560
+            "ros_domain_id": int(db.inputs.rosDomainId)
+            if db.inputs.rosDomainId is not None
+            else 0,
             
             # ArduPilot-specific autolaunch settings
             "ardupilot_autolaunch": db.inputs.ardupilotAutolaunch,      # True/False - launch ArduPilot automatically
@@ -81,19 +84,10 @@ class OgnPegasusMultirotorArduPilotNode:
                 db.inputs.inputScaling2,                        # Rotor 2 input scaling factor
                 db.inputs.inputScaling3                         # Rotor 3 input scaling factor
             ],
-            # ArduPilot-specific: Input min/max constraints
-            "input_min": [
-                db.inputs.inputMin0,                            # Rotor 0 minimum input value
-                db.inputs.inputMin1,                            # Rotor 1 minimum input value
-                db.inputs.inputMin2,                            # Rotor 2 minimum input value
-                db.inputs.inputMin3                             # Rotor 3 minimum input value
-            ],
-            "input_max": [
-                db.inputs.inputMax0,                            # Rotor 0 maximum input value
-                db.inputs.inputMax1,                            # Rotor 1 maximum input value
-                db.inputs.inputMax2,                            # Rotor 2 maximum input value
-                db.inputs.inputMax3                             # Rotor 3 maximum input value
-            ],
+            # PWM range for servo normalization (scalar; matches ThrusterControl)
+            "input_min": int(db.inputs.inputMin) if db.inputs.inputMin is not None else 1000,
+            "input_max": int(db.inputs.inputMax) if db.inputs.inputMax is not None else 2000,
+            "fdm_base_port": int(db.inputs.fdmBasePort) if db.inputs.fdmBasePort is not None else 9002,
             "zero_position_armed": [
                 db.inputs.zeroPositionArmed0,                   # Rotor 0 zero position when armed
                 db.inputs.zeroPositionArmed1,                   # Rotor 1 zero position when armed
@@ -102,16 +96,22 @@ class OgnPegasusMultirotorArduPilotNode:
             ]
         }
         
+        _onboard = int(os.environ.get("ONBOARD_BASE_PORT", "14580"))
+        _rd = config_dict["ros_domain_id"]
         print(f"ArduPilot Backend Configuration:")
         print(f"  Vehicle ID: {config_dict['vehicle_id']}")
-        print(f"  Connection: {config_dict['connection_type']}://{config_dict['connection_ip']}:{config_dict['connection_baseport']}")
+        print(
+            f"  MAVLink: {config_dict['connection_type']}://{config_dict['connection_ip']}:{_onboard + _rd} (ONBOARD_BASE_PORT + ros_domain_id = {_onboard} + {_rd})"
+        )
         print(f"  ArduPilot Autolaunch: {config_dict['ardupilot_autolaunch']}")
         print(f"  ArduPilot Directory: {config_dict['ardupilot_dir']}")
         print(f"  ArduPilot Vehicle Model: {config_dict['ardupilot_vehicle_model']}")
         print(f"  Lockstep Enabled: {config_dict['enable_lockstep']}")
         print(f"  Number of Rotors: {config_dict['num_rotors']}")
         print(f"  Update Rate: {config_dict['update_rate']} Hz")
-        
+        print(f"  PWM range: {config_dict['input_min']} - {config_dict['input_max']}")
+        print(f"  FDM base port: {config_dict['fdm_base_port']}")
+
         return ArduPilotMavlinkBackendConfig(config_dict)
 
     @staticmethod

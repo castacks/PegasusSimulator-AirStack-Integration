@@ -6,6 +6,7 @@
 """
 __all__ = ["ArduPilotMavlinkBackend", "ArduPilotMavlinkBackendConfig"]
 
+import os
 import carb
 import time
 import math
@@ -224,7 +225,7 @@ class ArduPilotMavlinkBackendConfig(BackendConfig):
             >>> {"vehicle_id": 0,
             >>>  "connection_type": "udpin",
             >>>  "connection_ip": "localhost",
-            >>>  "connection_baseport": 5760,
+            >>>  "ros_domain_id": 0,
             >>>  "ardupilot_autolaunch": True,
             >>>  "ardupilot_dir": "PegasusInterface().ardupilot_path",
             >>>  "ardupilot_vehicle_model": "gazebo-iris",
@@ -237,21 +238,22 @@ class ArduPilotMavlinkBackendConfig(BackendConfig):
             >>> }
         """
 
-        # Configurations for the mavlink communication protocol (note: the vehicle id is sumed to the connection_baseport)
+        # MAVLink UDP listen port = onboard_base_port + ros_domain_id (matches robot interface.launch.py)
         self.vehicle_id = config.get("vehicle_id", 0)
         self.connection_type = config.get("connection_type", "udpin")  # TODO working
-        # self.connection_type = config.get("connection_type", "tcp")
         self.connection_ip = config.get("connection_ip", "127.0.0.1")  # TODO working
-        self.connection_baseport = config.get(
-            "connection_baseport", 14550
-        )  # TODO working
-        # self.connection_baseport = config.get("connection_baseport", 14551)
-        # self.connection_baseport = config.get("connection_baseport", 5760)
+        self.ros_domain_id = int(config.get("ros_domain_id", 0))
+        if "onboard_base_port" in config and config.get("onboard_base_port") is not None:
+            self.onboard_base_port = int(config["onboard_base_port"])
+        else:
+            self.onboard_base_port = int(os.environ.get("ONBOARD_BASE_PORT", "14580"))
+        self.mavlink_listen_port = self.onboard_base_port + self.ros_domain_id
 
         # Configure whether to launch ArduPilot in the background automatically or not for every vehicle launched
         self.ardupilot_autolaunch: bool = config.get("ardupilot_autolaunch", True)
-        self.ardupilot_dir: str = config.get(
-            "ardupilot_dir", PegasusInterface().ardupilot_path
+        # expanduser is a no-op for paths without '~'; keeps legacy absolute paths identical.
+        self.ardupilot_dir: str = os.path.expanduser(
+            config.get("ardupilot_dir", PegasusInterface().ardupilot_path)
         )
         self.ardupilot_vehicle_model: str = config.get(
             "ardupilot_vehicle_model", "gazebo-iris"
@@ -272,8 +274,11 @@ class ArduPilotMavlinkBackendConfig(BackendConfig):
         # and infer directly from the function calls)
         self.update_rate: float = config.get("update_rate", 400)  # [Hz]
 
+        # Default 9002 matches legacy hardcoded ArduPilotPlugin(fdm_port_in=9002 + vehicle_id * 10).
+        self.fdm_base_port: int = int(config.get("fdm_base_port", 9002))
+
         carb.log_warn(
-            f"[ArduPilotMavlinkBackendConfig] Initialized with vehicle_id={self.vehicle_id}, connection_type={self.connection_type}, connection_ip={self.connection_ip}, connection_baseport={self.connection_baseport}, ardupilot_autolaunch={self.ardupilot_autolaunch}, ardupilot_dir={self.ardupilot_dir}, ardupilot_vehicle_model={self.ardupilot_vehicle_model}, enable_lockstep={self.enable_lockstep}, num_rotors={self.num_rotors}, input_offset={self.input_offset}, input_scaling={self.input_scaling}, zero_position_armed={self.zero_position_armed}, update_rate={self.update_rate}"
+            f"[ArduPilotMavlinkBackendConfig] Initialized with vehicle_id={self.vehicle_id}, connection_type={self.connection_type}, connection_ip={self.connection_ip}, mavlink_listen_port={self.mavlink_listen_port} (onboard_base_port={self.onboard_base_port} + ros_domain_id={self.ros_domain_id}), ardupilot_autolaunch={self.ardupilot_autolaunch}, ardupilot_dir={self.ardupilot_dir}, ardupilot_vehicle_model={self.ardupilot_vehicle_model}, enable_lockstep={self.enable_lockstep}, num_rotors={self.num_rotors}, input_offset={self.input_offset}, input_scaling={self.input_scaling}, zero_position_armed={self.zero_position_armed}, update_rate={self.update_rate}, fdm_base_port={self.fdm_base_port}"
         )
 
 
@@ -310,7 +315,7 @@ class ArduPilotMavlinkBackend(Backend):
         # The connection will only be created once the simulation starts
         self._vehicle_id = config.vehicle_id
         self._connection = None
-        self._connection_port = f"{config.connection_type}:{config.connection_ip}:{config.connection_baseport + self._vehicle_id * 10}"
+        self._connection_port = f"{config.connection_type}:{config.connection_ip}:{config.mavlink_listen_port}"
 
         # Check if we need to autolaunch ArduPilot in the background or not
         self.ardupilot_autolaunch: bool = config.ardupilot_autolaunch
@@ -319,6 +324,7 @@ class ArduPilotMavlinkBackend(Backend):
         )  # only needed if ardupilot_autolaunch == True
         self.ardupilot_tool: ArduPilotLaunchTool = None
         self.ardupilot_dir: str = config.ardupilot_dir
+        self._fdm_base_port: int = config.fdm_base_port
 
         # Set the update rate used for sending the messages (TODO - remove this hardcoded value from here)
         self._update_rate: float = config.update_rate
@@ -585,9 +591,25 @@ class ArduPilotMavlinkBackend(Backend):
                 f"[ArduPilotMavlinkBackend] About to call launch_ardupilot() with dir={self.ardupilot_dir}, id={self._vehicle_id}, model={self.ardupilot_vehicle_model}"
             )
             self.ardupilot_tool = ArduPilotLaunchTool(
-                self.ardupilot_dir, self._vehicle_id, self.ardupilot_vehicle_model
+                self.ardupilot_dir,
+                self._vehicle_id,
+                self.ardupilot_vehicle_model,
+                mavlink_out_host=self.config.connection_ip,
+                mavlink_udp_port=self.config.mavlink_listen_port,
             )
             self.ardupilot_tool.launch_ardupilot()
+            ap = self.ardupilot_tool.ardupilot_process
+            carb.log_warn(
+                "[ArduPilotMavlinkBackend] launch_ardupilot() returned "
+                f"bash_pid={getattr(ap, 'pid', None)} "
+                f"poll={ap.poll() if ap is not None else 'n/a'} "
+                f"stderr_log={getattr(self.ardupilot_tool, 'last_stderr_log', None)!r}"
+            )
+            cmd = getattr(self.ardupilot_tool, "last_command", None)
+            if cmd:
+                carb.log_warn(
+                    f"[ArduPilotMavlinkBackend] sim_vehicle command ({len(cmd)} chars): {cmd}"
+                )
 
         self._is_running = True
 
@@ -626,7 +648,9 @@ class ArduPilotMavlinkBackend(Backend):
         # Restart the sensor data
         self._sensor_data = SensorMsg()
 
-        self.ap = ArduPilotPlugin(fdm_port_in=9002 + self._vehicle_id * 10)
+        self.ap = ArduPilotPlugin(
+            fdm_port_in=self._fdm_base_port + self._vehicle_id * 10
+        )
         self.ap.drain_unread_packets()
 
         # Restart the connection
