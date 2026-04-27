@@ -9,6 +9,12 @@ from pathlib import Path
 
 import isaacsim.storage.native as nucleus
 
+import warnings
+try:
+    import torch
+except ImportError:
+    torch = None
+
 # Extension configuration
 EXTENSION_NAME = "Pegasus Simulator"
 WINDOW_TITLE = "Pegasus Simulator"
@@ -74,6 +80,7 @@ BACKENDS = {
     "ros2": "ros2"
 }
 
+# Physics/rendering rates — set via AirStack .env; defaults preserve original Pegasus values.
 # PX4_IMU_INTEG_RATE is synced to PX4_PHYSICS_HZ automatically in px4_mavlink_backend.py.
 PX4_PHYSICS_HZ: int          = int(os.environ.get("PX4_PHYSICS_HZ",          250))
 ARDUPILOT_PHYSICS_HZ: int    = int(os.environ.get("ARDUPILOT_PHYSICS_HZ",    800))

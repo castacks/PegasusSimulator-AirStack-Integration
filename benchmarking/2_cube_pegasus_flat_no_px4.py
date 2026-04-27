@@ -29,6 +29,7 @@ from utils.bench_timer import (
     CUBE_SPAWN_Z,
     parse_common_args,
     physics_hz_stem,
+    rendering_hz_stem,
     report,
     run_cube_fall_and_steady,
     script_stem,
@@ -38,6 +39,7 @@ DEFAULT_PHYSICS_HZ = 250
 
 args = parse_common_args(__doc__)
 physics_hz = args.physics_hz or DEFAULT_PHYSICS_HZ
+rendering_hz = args.rendering_hz
 
 timer = BenchTimer()
 timer.start("startup_sim_app")
@@ -63,6 +65,8 @@ timeline = omni.timeline.get_timeline_interface()
 
 pg = PegasusInterface()
 pg._world_settings["physics_dt"] = 1.0 / physics_hz
+if rendering_hz:
+    pg._world_settings["rendering_dt"] = 1.0 / rendering_hz
 pg._world = World(**pg._world_settings)
 world = pg.world
 
@@ -109,8 +113,10 @@ runtime = run_cube_fall_and_steady(
 timeline.stop()
 
 report(
-    script_stem=(script_stem(__file__) if args.physics_hz is None
-                 else physics_hz_stem(__file__, physics_hz)),
+    script_stem=(rendering_hz_stem(__file__, rendering_hz, args.physics_hz and physics_hz)
+                 if rendering_hz else
+                 (script_stem(__file__) if args.physics_hz is None
+                  else physics_hz_stem(__file__, physics_hz))),
     config={
         "pegasus": True,
         "scene": "Flat Plane",

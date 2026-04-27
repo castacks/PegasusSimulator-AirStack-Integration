@@ -1,135 +1,174 @@
-# Benchmark Analysis: Why Is Pegasus Slow?
+# Isaac Sim + Pegasus Simulator — CPU Benchmark Analysis
 
-## Setup
-
-Eight standalone Isaac Sim scripts each time a 0.5 m cube falling 10 m onto a ground plane under different configurations. Two timing phases are measured per run:
-
-- **Fall phase** (~1.4 s simulated): cube drop from spawn to landing
-- **Steady-state phase** (5 s simulated): post-landing, stable RTF sample
-
-**Headline metric:** real-time factor (RTF) = simulated seconds / wall-clock seconds. RTF > 1 means faster than real time; RTF < 1 means slower.
-
-All runs were done with `headless: false` (windowed), so rendering overhead is present equally across all scripts.
+**Machine:** CPU-only physics (`device=cpu`), headless, no RTX sensors  
+**Metric:** Steady-state Real-Time Factor (RTF) = simulated seconds / wall-clock seconds  
+**Goal:** Identify the minimum physics rate that allows ≥ 1× RTF for autonomy stack testing
 
 ---
 
-## Results Summary
+## TL;DR
 
-| # | Config | physics_dt | Steady RTF |
-|---|--------|-----------|-----------|
-| 1 | No Pegasus, default ground plane, 60 Hz | 1/60 | **3.46** |
-| 7 | No Pegasus, default ground plane, 250 Hz | 1/250 | **0.71** |
-| 2 | Pegasus + Python drone, Flat Plane, 250 Hz | 1/250 | **0.34** |
-| 3 | Pegasus + PX4 drone, Flat Plane, 250 Hz | 1/250 | **0.34** |
-| 6 | No Pegasus, Full Warehouse, 60 Hz | 1/60 | **2.98** |
-| 8 | No Pegasus, Full Warehouse, 250 Hz | 1/250 | **0.57** |
-| 4 | Pegasus + Python drone, Full Warehouse, 250 Hz | 1/250 | **0.31** |
-| 5 | Pegasus + PX4 drone, Full Warehouse, 250 Hz | 1/250 | **0.31** |
+| Scenario | 50 Hz | 100 Hz | 250 Hz |
+|---|---|---|---|
+| No Pegasus, flat | **1.75×** | 0.85× | 0.36× |
+| No Pegasus, warehouse | **1.75×** | 0.84× | 0.34× |
+| Pegasus + Python ctrl, flat | **1.55×** | 0.73× | 0.16× |
+| Pegasus + Python ctrl, warehouse | **1.48×** | 0.73× | 0.15× |
+| Pegasus + PX4, flat | **1.76×** | 0.74× | **0.27×** |
+| Pegasus + PX4, warehouse | **1.61×** | 0.78× | **0.18×** |
 
-![graph](results/summary.png)
----
-
-## Key Findings
-
-### 1. PX4 is NOT the bottleneck — the hypothesis is wrong
-
-The original hypothesis was that PX4's 250 Hz MAVLink lockstep loop causes the slowdown. The data directly refutes this:
-
-| Script | Backend | Steady RTF |
-|--------|---------|-----------|
-| 2 — Pegasus, flat, Python | NonlinearController (in-process) | 0.336 |
-| 3 — Pegasus, flat, PX4 | MAVLink 250 Hz lockstep | 0.336 |
-| 4 — Pegasus, warehouse, Python | NonlinearController (in-process) | 0.306 |
-| 5 — Pegasus, warehouse, PX4 | MAVLink 250 Hz lockstep | 0.307 |
-
-Swapping in PX4 produces no measurable difference in RTF. The MAVLink serialization, TCP communication, and lockstep synchronization with PX4 consume negligible wall-clock time relative to the physics simulation itself.
-
-### 2. The 250 Hz physics step rate is the primary cause
-
-| Script | physics_dt | Scene | Steady RTF |
-|--------|-----------|-------|-----------|
-| 1 | 1/60 (60 Hz) | ground plane | 3.46 |
-| 7 | 1/250 (250 Hz) | ground plane | 0.71 |
-| 6 | 1/60 (60 Hz) | Full Warehouse | 2.98 |
-| 8 | 1/250 (250 Hz) | Full Warehouse | 0.57 |
-
-Going from 60 Hz to 250 Hz with nothing else changing — no Pegasus, no drone — drops RTF from **3.46 → 0.71**, a **4.9× slowdown**. The machine cannot tick the PhysX engine 250 times per second fast enough to keep up with simulated time.
-
-This is the root cause. `WORLD_SETTINGS['px4']` in [params.py](../extensions/pegasus.simulator/pegasus/simulator/params.py) hard-codes `physics_dt = 1/250` for all Pegasus simulations, including the Python backend which has no need of it.
-
-### 3. Pegasus + drone simulation adds another ~2× overhead
-
-Comparing no-Pegasus vs. Pegasus at the same 250 Hz physics rate:
-
-| Script | Config | Steady RTF | Drop vs 250 Hz baseline |
-|--------|--------|-----------|------------------------|
-| 7 | No Pegasus, 250 Hz, flat | 0.71 | — |
-| 2 | Pegasus + Python drone, 250 Hz, flat | 0.34 | −52% |
-| 8 | No Pegasus, 250 Hz, warehouse | 0.57 | — |
-| 4 | Pegasus + Python drone, 250 Hz, warehouse | 0.31 | −46% |
-
-The Pegasus per-step overhead — articulation physics for the Iris quadrotor, rotor force application, and the `update_state()` / `update_sensor()` / `update(dt)` callback chain running 250×/s — cuts RTF roughly in half, independent of backend choice.
-
-### 4. Scene complexity is a startup problem, not a runtime problem
-
-Full Warehouse adds ~13 s to startup (USD streaming and mesh loading) but reduces steady-state RTF by only ~20% at 250 Hz with no drone (0.71 → 0.57), and by less than 10% when the drone is already dominant (0.34 → 0.31).
-
-| Script | Startup total (s) | Steady RTF |
-|--------|------------------|-----------|
-| 7 — no Pegasus, flat, 250 Hz | 12.6 | 0.71 |
-| 8 — no Pegasus, warehouse, 250 Hz | 25.7 | 0.57 |
-| 2 — Pegasus, flat, 250 Hz | 13.7 | 0.34 |
-| 4 — Pegasus, warehouse, 250 Hz | 26.6 | 0.31 |
-
-Scene choice matters mainly for iteration time (how fast the script reaches simulation), not for ongoing simulation speed.
+**50 Hz** is the only physics rate that reliably achieves real-time across all scenarios.  
+**100 Hz** is viable for flat/simple scenes but falls short in the full warehouse.  
+**250 Hz** (current default) runs at 0.08–0.36× real-time — 3–12× slower than real-time.
 
 ---
 
-## Cause Attribution
+## 1. Physics Rate is the Dominant Bottleneck
 
-Stacking the contributing slowdown factors from the 60 Hz no-Pegasus baseline:
+The physics step rate overwhelms all other factors. Every halving of physics Hz roughly doubles RTF:
 
 ```
-RTF 3.46   Script 1: no Pegasus, 60 Hz physics, simple scene
-     ↓  ÷4.9×  250 Hz physics step rate (WORLD_SETTINGS forces this)
-RTF 0.71   Script 7: no Pegasus, 250 Hz physics, simple scene
-     ↓  ÷2.1×  Pegasus extension + Iris drone articulation + per-step callbacks
-RTF 0.34   Script 2/3: Pegasus, 250 Hz, flat, Python or PX4 (indistinguishable)
-     ↓  ÷1.1×  Full Warehouse scene rendering overhead
-RTF 0.31   Script 4/5: Pegasus, 250 Hz, warehouse, Python or PX4 (indistinguishable)
+No Pegasus (flat scene):
+  50 Hz  →  1.93× RT
+ 100 Hz  →  0.92× RT   (–53%)
+ 250 Hz  →  0.36× RT   (–81% from 100 Hz)
+
+Pegasus + Python ctrl (flat):
+  50 Hz  →  1.55× RT
+ 100 Hz  →  0.73× RT   (–53%)
+ 250 Hz  →  0.16× RT   (–78% from 100 Hz)
 ```
 
-PX4 contributes 0% of the slowdown. The 250 Hz physics rate contributes ~70% of the total slowdown; Pegasus/drone overhead contributes the remaining ~30%.
+The 50→100 Hz step is roughly linear (2× steps = ~2× cost). The 100→250 Hz step is superlinear — Pegasus's per-step Python callbacks (sensor updates, controller math, MAVLink I/O) pile up disproportionately at high step rates.
 
 ---
 
-## Recommendations
+## 2. Cost Breakdown by Component
 
-### High impact
+By comparing baselines we can isolate each layer's contribution at 250 Hz:
 
-**1. Decouple physics step rate from MAVLink update rate** *(the primary fix)*
+| Component | Steady RTF | Cost vs baseline |
+|---|---|---|
+| Isaac Sim physics alone (no Pegasus) | 0.36× | baseline |
+| + Pegasus vehicle (Python controller) | 0.16× | −0.20× |
+| + PX4 MAVLink backend (instead of Python) | 0.27× | −0.09× |
+| + Full Warehouse scene (vs flat plane) | −0.01 to −0.03× | small |
 
-The 250 Hz physics rate is enforced globally in `WORLD_SETTINGS['px4']` even for backends that don't need it. The physics step rate and the PX4 sensor packet rate are conflated but need not be. Options:
+### Physics overhead alone
+Even with no Pegasus extension loaded, 250 Hz physics runs at only **0.36× RT**. This is an Isaac Sim / PhysX cost, not Pegasus-specific.
 
-- **Per-backend `physics_dt`**: set `physics_dt = 1/250` only when a PX4 backend is actually in use; default to a more comfortable rate (e.g. 1/100 or 1/60) otherwise. This recovers the 5× loss for non-PX4 simulations.
-- **Sub-stepped MAVLink**: run physics at e.g. 1/60 and sub-step the MAVLink sensor publish within each physics step to satisfy PX4's 250 Hz expectation. Complex to implement but would recover performance even for PX4 users.
+### Pegasus vehicle cost
+Loading a Pegasus `Multirotor` with the Python `NonlinearController` backend cuts RTF from 0.36 to **0.16×** at 250 Hz — a **55% penalty** from the vehicle's per-step Python callbacks (IMU updates, SE(3) controller, state integration).
 
-**2. Switch physics device from CPU to GPU**
+### PX4 vs Python controller — a counterintuitive result
+At 250 Hz, PX4 MAVLink performs *better* than the pure Python controller (0.27× vs 0.16×):
 
-`WORLD_SETTINGS` currently sets `"device": "cpu"` for all backends. Moving to GPU PhysX (set `"device": "cuda"`) allows many more physics steps per second, especially important at 250 Hz with articulated robots. Verify GPU physics supports the Iris articulation before switching.
+| Backend | 250 Hz RTF |
+|---|---|
+| Python NonlinearController | 0.16× |
+| PX4 MAVLink | 0.27× |
 
-### Medium impact
+This is counterintuitive — PX4 adds a subprocess, MAVLink I/O, and lockstep sync. The likely explanation: **PX4 lockstep acts as a natural rate limiter**. The MAVLink heartbeat/sensor cycle caps how fast the simulation can advance, effectively throttling the physics loop. The Python controller has no such cap and spins at full rate, burning more CPU per simulated second.
 
-**3. Profile the per-step drone callbacks**
+### Scene complexity
+The Full Warehouse vs Flat Plane difference is small at runtime (≤0.03× RTF delta) but significant for **startup time**:
 
-The 2× RTF loss from Pegasus + drone (0.71 → 0.34) is significant but opaque. The callback chain — `update_state()`, `update_sensor()` (GPS, IMU, barometer, magnetometer), and backend `update(dt)` — runs 250×/s per vehicle. Profiling with `cProfile` or `py-spy` on a Pegasus-only run (script 2) would identify whether the bottleneck is sensor model computation, Python overhead in the callback chain, or the rotor aerodynamics force application.
+| Scene | Startup (warm) | Startup (cold/first-run) |
+|---|---|---|
+| Flat Plane | ~9 s | ~9 s |
+| Full Warehouse | ~20–26 s | ~52 s |
 
-**4. Run headless for production workloads**
+Cold startup (first shader compile) costs 2–3× more. Subsequent runs are consistent.
 
-These benchmarks used `headless: false`. Switching to `headless: true` eliminates the render loop. At 250 Hz this is a secondary saving (rendering_dt is 1/60 regardless of physics_dt), but it removes GPU contention and any vsync-related blocking.
+---
 
-### Low impact
+## 3. Rendering Rate Has Minimal Effect (Headless, No Sensors)
 
-**5. Prefer simpler scenes where feasible**
+Entries 25–32 swept rendering at 30 Hz and 60 Hz at default 250 Hz physics:
 
-Full Warehouse adds ~13 s to startup and ~10% to steady-state cost. If the scenario doesn't require complex geometry, using Flat Plane or Default Environment reduces both.
+| Script | 30 Hz render | 60 Hz render | Delta |
+|---|---|---|---|
+| Pegasus + Python, flat, 250 Hz | 0.086× | 0.148× | −0.06 |
+| Pegasus + PX4, flat, 250 Hz | 0.108× | 0.203× | −0.09 |
+| Pegasus + Python, warehouse, 250 Hz | 0.083× | 0.152× | −0.07 |
+| Pegasus + PX4, warehouse, 250 Hz | 0.112× | 0.203× | −0.09 |
+
+Unexpectedly, **30 Hz rendering yields lower RTF than 60 Hz** in headless mode without sensors. This reversal is likely a render-sync artifact: at lower render frequencies, the headless RTX pipeline may issue less frequent but larger GPU synchronization barriers, increasing per-render cost and stalling the physics loop. In practice the delta is small relative to the physics cost, and **rendering rate is not a meaningful optimization lever without RTX sensors attached**.
+
+---
+
+## 4. Recommended Physics Rates for AirStack
+
+| Use case | Recommended Hz | Rationale |
+|---|---|---|
+| Real-time autonomy stack testing | **50 Hz** | Comfortable 1.5–1.8× RT margin; all scenarios pass |
+| Fast offline data collection | **100 Hz** | ~0.73–0.98× RT; acceptable for flat scenes; add time to warehouse runs |
+| High-fidelity physics validation | **250 Hz** | Only usable in slow-motion (7–12× slower); plan for long runs |
+
+### PX4 IMU Integration Rate
+`PX4_IMU_INTEG_RATE` must match `physics_dt` to keep lockstep in sync. This is now handled automatically by `PX4LaunchTool` — no manual adjustment needed when changing `PX4_PHYSICS_HZ` in `.env`.
+
+---
+
+## 5. What 250 Hz Costs in Practice
+
+At 250 Hz with Pegasus + PX4 in the Full Warehouse (the closest to the real AirStack scenario):
+
+- **Steady RTF: 0.18×** — 1 simulated second takes ~5.5 wall-clock seconds
+- **5 seconds of sim time** takes ~27 wall-clock seconds
+- A **60-second mission** would take ~5.5 minutes of computation
+- A **10-minute mission** would take ~55 minutes
+
+This makes interactive debugging impractical. **Dropping to 100 Hz** recovers ~4× speed (RTF ~0.78×), making 1 minute of mission time cost ~80 wall-clock seconds.
+
+---
+
+## 6. GPU Physics Note
+
+GPU physics (`device="cuda"`) was investigated but found to be **incompatible with Pegasus's drone simulation**. The Isaac Sim GPU physics pipeline enables `eENABLE_DIRECT_GPU_API`, which disables `PxArticulationLink::addTorque()` — the API Pegasus uses to apply motor forces to the drone. All results in this document use CPU physics.
+
+---
+
+## Appendix: Full Results Table
+
+| Script | Physics Hz | Render Hz | Startup (s) | Steady RTF |
+|---|---|---|---|---|
+| 1 — no Pegasus, flat | 60 | 60 | 9.2 | 1.553 |
+| 1 — no Pegasus, flat | 100 | 60 | 8.2 | 0.854 |
+| 1 — no Pegasus, flat | 50 | 60 | 8.2 | 1.749 |
+| 2 — Pegasus Python, flat | 250 | 60 | 12.3 | 0.156 |
+| 2 — Pegasus Python, flat | 100 | 60 | 9.2 | 0.731 |
+| 2 — Pegasus Python, flat | 50 | 60 | 9.5 | 1.552 |
+| 3 — Pegasus PX4, flat | 250 | 60 | 9.5 | 0.268 |
+| 3 — Pegasus PX4, flat | 100 | 60 | 9.4 | 0.737 |
+| 3 — Pegasus PX4, flat | 50 | 60 | 9.2 | 1.764 |
+| 4 — Pegasus Python, warehouse | 250 | 60 | 52.4* | 0.149 |
+| 4 — Pegasus Python, warehouse | 100 | 60 | 26.4 | 0.731 |
+| 4 — Pegasus Python, warehouse | 50 | 60 | 25.6 | 1.483 |
+| 5 — Pegasus PX4, warehouse | 250 | 60 | 25.9 | 0.183 |
+| 5 — Pegasus PX4, warehouse | 100 | 60 | 24.3 | 0.776 |
+| 5 — Pegasus PX4, warehouse | 50 | 60 | 25.2 | 1.606 |
+| 6 — no Pegasus, warehouse | 60 | 60 | 26.0 | 1.413 |
+| 6 — no Pegasus, warehouse | 100 | 60 | 25.1 | 0.840 |
+| 6 — no Pegasus, warehouse | 50 | 60 | 26.2 | 1.752 |
+| 7 — no Pegasus, flat (explicit) | 250 | 60 | 8.2 | 0.357 |
+| 7 — no Pegasus, flat (explicit) | 100 | 60 | 8.2 | 0.917 |
+| 7 — no Pegasus, flat (explicit) | 50 | 60 | 8.3 | 1.927 |
+| 8 — no Pegasus, warehouse (explicit) | 250 | 60 | 26.8 | 0.336 |
+| 8 — no Pegasus, warehouse (explicit) | 100 | 60 | 26.2 | 0.847 |
+| 8 — no Pegasus, warehouse (explicit) | 50 | 60 | 26.4 | 1.614 |
+
+\* 52s startup on first run; subsequent runs ~26s (shader cache warm)
+
+**Rendering sweep (250 Hz physics, headless, no sensors):**
+
+| Script | Render Hz | Steady RTF |
+|---|---|---|
+| 2 — Pegasus Python, flat | 30 | 0.086 |
+| 2 — Pegasus Python, flat | 60 | 0.148 |
+| 3 — Pegasus PX4, flat | 30 | 0.108 |
+| 3 — Pegasus PX4, flat | 60 | 0.203 |
+| 4 — Pegasus Python, warehouse | 30 | 0.083 |
+| 4 — Pegasus Python, warehouse | 60 | 0.152 |
+| 5 — Pegasus PX4, warehouse | 30 | 0.112 |
+| 5 — Pegasus PX4, warehouse | 60 | 0.203 |

@@ -15,6 +15,8 @@ Script numbering:
   17–20  scripts 2 & 4 (Pegasus + Python)          at 100 Hz and 50 Hz
   21–24  scripts 3 & 5 (Pegasus + PX4)             at 100 Hz and 50 Hz
             IMU_INTEG_RATE is set automatically via PX4_IMU_INTEG_RATE env var
+  25–28  scripts 2–5 (Pegasus) at 30 Hz rendering  (physics stays at default 250 Hz)
+  29–32  scripts 2–5 (Pegasus) at 60 Hz rendering  (physics stays at default 250 Hz)
 
 Invocation:
   python3 benchmarking/run_all.py                        # run all and plot
@@ -52,7 +54,9 @@ RESULTS_DIR = BENCH_DIR / "results"
 #   17–20 : scripts 2 & 4 (Pegasus + Python) at 100 Hz and 50 Hz
 #   21–24 : scripts 3 & 5 (Pegasus + PX4)   at 100 Hz and 50 Hz
 #             → IMU_INTEG_RATE is set automatically via PX4_IMU_INTEG_RATE env var
-SCRIPTS = {
+#   25–28 : scripts 2–5 (Pegasus) at 30 Hz rendering  (physics = default 250 Hz)
+#   29–32 : scripts 2–5 (Pegasus) at 60 Hz rendering  (physics = default 250 Hz)
+SCRIPTS: dict = {
     1: "1_cube_no_pegasus.py",
     2: "2_cube_pegasus_flat_no_px4.py",
     3: "3_cube_pegasus_flat_px4.py",
@@ -81,6 +85,16 @@ SCRIPTS = {
     22: ("5_cube_pegasus_complex_px4.py",      ["--physics-hz", "100"]),
     23: ("3_cube_pegasus_flat_px4.py",         ["--physics-hz", "50"]),
     24: ("5_cube_pegasus_complex_px4.py",      ["--physics-hz", "50"]),
+    # Rendering rate sweep: 30 Hz (physics stays at default 250 Hz)
+    25: ("2_cube_pegasus_flat_no_px4.py",      ["--rendering-hz", "30"]),
+    26: ("3_cube_pegasus_flat_px4.py",         ["--rendering-hz", "30"]),
+    27: ("4_cube_pegasus_complex_no_px4.py",   ["--rendering-hz", "30"]),
+    28: ("5_cube_pegasus_complex_px4.py",      ["--rendering-hz", "30"]),
+    # Rendering rate sweep: 60 Hz (physics stays at default 250 Hz)
+    29: ("2_cube_pegasus_flat_no_px4.py",      ["--rendering-hz", "60"]),
+    30: ("3_cube_pegasus_flat_px4.py",         ["--rendering-hz", "60"]),
+    31: ("4_cube_pegasus_complex_no_px4.py",   ["--rendering-hz", "60"]),
+    32: ("5_cube_pegasus_complex_px4.py",      ["--rendering-hz", "60"]),
 }
 
 
@@ -108,19 +122,29 @@ def _script_file_and_args(script_num: int) -> tuple[str, list[str]]:
 def _result_stem(script_num: int) -> str:
     """Return the JSON result stem for a script entry.
 
-    For plain string entries the stem is the filename stem.
-    For tuple entries with a --physics-hz argument, physics_hz_stem() is used
-    so the stem matches what the script itself will write.
+    Mirrors the logic in bench_timer.physics_hz_stem / rendering_hz_stem so the
+    stem matches what the script itself will write to results/.
     """
     import re
     filename, extra = _script_file_and_args(script_num)
     base = Path(filename).stem
-    # Extract --physics-hz value from extra args if present
+
+    physics_hz: int | None = None
+    rendering_hz: int | None = None
     for i, arg in enumerate(extra):
         if arg == "--physics-hz" and i + 1 < len(extra):
-            hz = int(extra[i + 1])
-            new_base, n = re.subn(r"_\d+hz$", f"_{hz}hz", base)
-            return new_base if n else f"{base}_{hz}hz"
+            physics_hz = int(extra[i + 1])
+        elif arg == "--rendering-hz" and i + 1 < len(extra):
+            rendering_hz = int(extra[i + 1])
+
+    if physics_hz is not None:
+        base, n = re.subn(r"_\d+hz$", f"_{physics_hz}hz", base)
+        if n == 0:
+            base = f"{base}_{physics_hz}hz"
+    if rendering_hz is not None:
+        base = re.sub(r"_r\d+hz$", "", base)
+        base = f"{base}_r{rendering_hz}hz"
+
     return base
 
 

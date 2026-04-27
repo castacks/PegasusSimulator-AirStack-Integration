@@ -225,6 +225,14 @@ def parse_common_args(description: str):
         metavar="HZ",
         help="Physics step rate in Hz (overrides the script's built-in default).",
     )
+    parser.add_argument(
+        "--rendering-hz",
+        dest="rendering_hz",
+        type=int,
+        default=None,
+        metavar="HZ",
+        help="Rendering step rate in Hz (overrides the script's built-in default).",
+    )
     return parser.parse_args()
 
 
@@ -251,3 +259,28 @@ def physics_hz_stem(file_path: str, physics_hz: int) -> str:
     if n == 0:
         new_base = f"{base}_{physics_hz}hz"
     return new_base
+
+
+def rendering_hz_stem(file_path: str, rendering_hz: int, physics_hz: int | None = None) -> str:
+    """Return a result-file stem that encodes the rendering rate as ``_r<N>hz``.
+
+    Optionally also substitutes the physics rate (same as physics_hz_stem) first,
+    then appends ``_r<rendering_hz>hz``.
+
+    Example::
+
+        rendering_hz_stem("2_cube_pegasus_flat_no_px4.py", 30)
+        # → "2_cube_pegasus_flat_no_px4_r30hz"
+
+        rendering_hz_stem("7_cube_no_pegasus_250hz.py", 30, physics_hz=100)
+        # → "7_cube_no_pegasus_100hz_r30hz"
+    """
+    import re
+    base = Path(file_path).stem
+    if physics_hz is not None:
+        base, n = re.subn(r"_\d+hz$", f"_{physics_hz}hz", base)
+        if n == 0:
+            base = f"{base}_{physics_hz}hz"
+    # Strip any existing _r<N>hz suffix then append the new one
+    base = re.sub(r"_r\d+hz$", "", base)
+    return f"{base}_r{rendering_hz}hz"
