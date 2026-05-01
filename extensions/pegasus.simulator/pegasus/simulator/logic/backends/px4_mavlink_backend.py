@@ -514,7 +514,16 @@ class PX4MavlinkBackend(Backend):
         # Launch the PX4 in the background if needed
         if self.px4_autolaunch and self.px4_tool is None:
             carb.log_info("Attempting to launch PX4 in background process")
-            self.px4_tool = PX4LaunchTool(self.px4_dir, self._vehicle_id, self.px4_vehicle_model)
+            # This sets PX4_IMU_INTEG_RATE in the PX4 process environment which the px4-rc.simulator reads via:
+            #   param set-default IMU_INTEG_RATE ${PX4_IMU_INTEG_RATE:-250}
+            try:
+                _physics_dt = PegasusInterface()._world_settings["physics_dt"]
+            except:
+                raise ValueError("Could not retrieve physics_dt from world settings, please set the physics_dt in the world settings")
+            
+            _imu_hz = max(1, round(1.0 / _physics_dt))
+            self.px4_tool = PX4LaunchTool(self.px4_dir, self._vehicle_id, self.px4_vehicle_model,
+                                          imu_integ_rate=_imu_hz)
             self.px4_tool.launch_px4()
 
     def stop(self):

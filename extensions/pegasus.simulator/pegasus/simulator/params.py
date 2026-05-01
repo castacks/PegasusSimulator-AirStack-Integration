@@ -9,6 +9,12 @@ from pathlib import Path
 
 import isaacsim.storage.native as nucleus
 
+import warnings
+try:
+    import torch
+except ImportError:
+    torch = None
+
 # Extension configuration
 EXTENSION_NAME = "Pegasus Simulator"
 WINDOW_TITLE = "Pegasus Simulator"
@@ -74,27 +80,34 @@ BACKENDS = {
     "ros2": "ros2"
 }
 
+# Physics/rendering rates — set via AirStack .env; defaults preserve original Pegasus values.
+# PX4_IMU_INTEG_RATE is synced to PX4_PHYSICS_HZ automatically in px4_mavlink_backend.py.
+PX4_PHYSICS_HZ: int          = int(os.environ.get("PX4_PHYSICS_HZ",          250))
+ARDUPILOT_PHYSICS_HZ: int    = int(os.environ.get("ARDUPILOT_PHYSICS_HZ",    800))
+PX4_RENDERING_HZ: int        = int(os.environ.get("PX4_RENDERING_HZ",         60))
+ARDUPILOT_RENDERING_HZ: int  = int(os.environ.get("ARDUPILOT_RENDERING_HZ",  120))
+
 # Define the default settings for the simulation environment
 WORLD_SETTINGS = {
     'px4': {
-        "physics_dt": 1.0 / 250.0,
+        "physics_dt": 1.0 / PX4_PHYSICS_HZ,
         "stage_units_in_meters": 1.0,
-        "rendering_dt": 1.0 / 60.0,
+        "rendering_dt": 1.0 / PX4_RENDERING_HZ,
         "device": "cpu",
         # match the path that gets created from GUI from Create > Physics > Physics Scene
-        "physics_prim_path": "/World/PhysicsScene" 
+        "physics_prim_path": "/World/PhysicsScene"
     },
     'ardupilot': {
-        "physics_dt": 1.0 / 800.0, # Reach communication of 250hz with ardupilot sitl
+        "physics_dt": 1.0 / ARDUPILOT_PHYSICS_HZ,
         "stage_units_in_meters": 1.0,
-        "rendering_dt": 1.0 / 120.0,
+        "rendering_dt": 1.0 / ARDUPILOT_RENDERING_HZ,
         "device": "cpu",
         "physics_prim_path": "/World/PhysicsScene"
     },
     'ros2': {
-        "physics_dt": 1.0 / 250.0,
+        "physics_dt": 1.0 / PX4_PHYSICS_HZ,
         "stage_units_in_meters": 1.0,
-        "rendering_dt": 1.0 / 60.0,
+        "rendering_dt": 1.0 / PX4_RENDERING_HZ,
         "device": "cpu",
         "physics_prim_path": "/World/PhysicsScene"
     }

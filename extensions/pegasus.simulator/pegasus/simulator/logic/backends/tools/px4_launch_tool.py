@@ -17,13 +17,15 @@ class PX4LaunchTool:
     PX4 was already built with 'make px4_sitl_default none'), the vehicle id and the vehicle model. 
     """
 
-    def __init__(self, px4_dir, vehicle_id: int = 0, px4_model: str = "gazebo-classic_iris"):
+    def __init__(self, px4_dir, vehicle_id: int = 0, px4_model: str = "gazebo-classic_iris",
+                 imu_integ_rate: int = None):
         """Construct the PX4LaunchTool object
 
         Args:
             px4_dir (str): A string with the path to the PX4-Autopilot directory
             vehicle_id (int): The ID of the vehicle. Defaults to 0.
             px4_model (str): The vehicle model. Defaults to "iris".
+            imu_integ_rate (int | None): Override for PX4_IMU_INTEG_RATE (Hz).
         """
 
         # Attribute that will hold the px4 process once it is running
@@ -44,6 +46,12 @@ class PX4LaunchTool:
         self.environment = os.environ.copy()
         self.environment["PX4_SIM_MODEL"] = px4_model
         self.environment["px4_instance"] = str(vehicle_id)
+
+        # We modified px4-rc.simulator reads PX4_IMU_INTEG_RATE and applies it via:
+        #   param set-default IMU_INTEG_RATE ${PX4_IMU_INTEG_RATE:-250}
+        if imu_integ_rate is not None:
+            self.environment["PX4_IMU_INTEG_RATE"] = str(int(imu_integ_rate))
+            carb.log_info(f"PX4LaunchTool: PX4_IMU_INTEG_RATE set to {imu_integ_rate} Hz")
 
         alias_script = self.px4_dir + "/build/px4_sitl_default/bin/px4-alias.sh"
         if os.path.exists(alias_script):
