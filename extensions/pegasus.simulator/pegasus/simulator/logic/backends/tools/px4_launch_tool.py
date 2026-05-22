@@ -7,6 +7,7 @@
 
 # System tools used to launch the px4 process in the brackground
 import os
+import signal
 import tempfile
 import subprocess
 import carb
@@ -61,6 +62,10 @@ class PX4LaunchTool:
         """
         Method that will launch a px4 instance with the specified configuration
         """
+        # start_new_session=True puts PX4 in its own process group/session so we
+        # can signal the entire group on shutdown — PX4 SITL spawns helper
+        # threads/processes that otherwise leak past Popen.kill() and keep
+        # talking to the simulator on the next Play.
         self.px4_process = subprocess.Popen(
             [
                 self.px4_dir + "/build/px4_sitl_default/bin/px4",
@@ -74,15 +79,50 @@ class PX4LaunchTool:
             cwd=self.root_fs.name,
             shell=False,
             env=self.environment,
+            start_new_session=True,
         )
 
     def kill_px4(self):
         """
-        Method that will kill a px4 instance with the specified configuration
+        Method that will kill a px4 instance with the specified configuration.
+
+        Kills the whole process group (SIGTERM, then SIGKILL) and waits for it
+        to be reaped. Without this, the previous PX4 instance can survive a
+        Stop → Play cycle and inject its prior armed/setpoint state into the
+        next run.
         """
-        if self.px4_process is not None:
-            self.px4_process.kill()
-            self.px4_process = None
+        if self.px4_process is None:
+            return
+
+        try:
+            pgid = os.getpgid(self.px4_process.pid)
+        except ProcessLookupError:
+            pgid = None
+
+        def _signal_group(sig):
+            if pgid is None:
+                return
+            try:
+                os.killpg(pgid, sig)
+            except ProcessLookupError:
+                pass
+            except PermissionError as e:
+                carb.log_warn(f"PX4LaunchTool: killpg({pgid}, {sig}) denied: {e}")
+
+        _signal_group(signal.SIGTERM)
+        try:
+            self.px4_process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            _signal_group(signal.SIGKILL)
+            try:
+                self.px4_process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                carb.log_warn(
+                    f"PX4LaunchTool: PX4 pid={self.px4_process.pid} did not exit "
+                    f"after SIGKILL within 2s"
+                )
+
+        self.px4_process = None
 
     def __del__(self):
         """

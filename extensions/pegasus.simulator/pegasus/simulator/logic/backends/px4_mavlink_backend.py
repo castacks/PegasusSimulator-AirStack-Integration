@@ -538,15 +538,34 @@ class PX4MavlinkBackend(Backend):
         # Set the flag so that we are no longer running the mavlink interface
         self._is_running = False
 
+        # Zero the rotor command immediately. If a stale Multirotor.update
+        # callback fires after Stop (Isaac's physics-callback removal is not
+        # always instantaneous), it will read input_reference() — without this,
+        # it would apply the *last* PX4 thrust command and the drone would
+        # veer off when the user pressed Play again.
+        try:
+            self._rotor_data.zero_input_reference()
+        except Exception:
+            pass
+
         # Close the mavlink connection
-        self._connection.close()
+        try:
+            if self._connection is not None:
+                self._connection.close()
+        except Exception as e:
+            carb.log_warn(f"PX4MavlinkBackend: error closing mavlink connection: {e}")
         self._connection = None
 
-        # Close the PX4 if it was running
-        if self.px4_autolaunch and self.px4_autolaunch is not None:
+        # Close the PX4 if it was running. Guard against px4_tool being None
+        # (start() may have set _is_running before launch_px4 succeeded), and
+        # always clear px4_tool so a subsequent start() relaunches cleanly.
+        if self.px4_autolaunch and self.px4_tool is not None:
             carb.log_info("Attempting to kill PX4 background process")
-            self.px4_tool.kill_px4()
-            self.px4_tool = None
+            try:
+                self.px4_tool.kill_px4()
+            except Exception as e:
+                carb.log_warn(f"PX4MavlinkBackend: error killing PX4: {e}")
+        self.px4_tool = None
 
     def reset(self):
         """For now does nothing. Here for compatibility purposes only
@@ -604,6 +623,11 @@ class PX4MavlinkBackend(Backend):
         Args:
             dt (float): The time elapsed between the previous and current function calls (s).
         """
+
+        # If stop() was called (or start() never completed) the connection is
+        # gone — silently skip rather than crash from a stale physics callback.
+        if not self._is_running or self._connection is None:
+            return
 
         # Check for the first hearbeat on the first few iterations
         if not self._received_first_hearbeat:

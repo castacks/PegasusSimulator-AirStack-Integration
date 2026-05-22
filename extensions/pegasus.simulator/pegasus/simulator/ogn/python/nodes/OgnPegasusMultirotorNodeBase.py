@@ -55,40 +55,31 @@ def timeline_callback(event):
     elif event.type == int(omni.timeline.TimelineEventType.PAUSE):
         pass
     elif event.type == int(omni.timeline.TimelineEventType.STOP):
-        # Stop all backends before clearing the dictionary to prevent zombie processes
-        world = World.instance()
+        # Belt-and-suspenders: ensure each backend is stopped (PX4 killed,
+        # mavlink connection closed, rotor reference zeroed). The per-vehicle
+        # sim_start_stop callback also calls backend.stop() on world stop, and
+        # backend.stop() is idempotent via its _is_running guard.
+        #
+        # We deliberately do NOT clear drone_sim_dict or remove the vehicle's
+        # physics callbacks here. Isaac Sim's add_physics_callback does not
+        # reliably overwrite an existing entry, so if we tore down on Stop and
+        # rebuilt on Play, the new multirotor's sensor callbacks would silently
+        # fail to register — PX4 would launch but never receive HIL_SENSOR,
+        # producing "[simulator_mavlink] poll timeout". Instead we keep the
+        # same multirotor + physics callbacks across Stop/Play cycles; the
+        # per-vehicle sim_start_stop handles backend.start()/stop() (which
+        # relaunches a fresh PX4 process each Play).
         for node_id, drone_data in drone_sim_dict.items():
             backend = drone_data.get('backend')
-            if backend:
+            if backend is not None:
                 try:
                     backend.stop()
-                    carb.log_info(f"[Pegasus] Stopped backend for node {node_id}")
                 except Exception as e:
                     carb.log_warn(f"[Pegasus] Error stopping backend for node {node_id}: {e}")
-
-            # Remove the Vehicle's physics/timeline/render callbacks so they
-            # don't conflict when compute_base re-creates the drone on Play.
-            multirotor = drone_data.get('multirotor')
-            if multirotor and world is not None:
-                prefix = getattr(multirotor, '_stage_prefix', '')
-                if prefix:
-                    for suffix in ["/state", "/update", "/Sensors", "/mav_state"]:
-                        try:
-                            world.remove_physics_callback(prefix + suffix)
-                        except Exception:
-                            pass
-                    try:
-                        world.remove_timeline_callback(prefix + "/start_stop_sim")
-                    except Exception:
-                        pass
-                    try:
-                        world.remove_render_callback(prefix + "/GraphicalSensors")
-                    except Exception:
-                        pass
-
-        num_cleared = len(drone_sim_dict)
-        drone_sim_dict = {}
-        carb.log_info(f"[Pegasus] Timeline STOP: cleared {num_cleared} drone(s)")
+        carb.log_info(
+            f"[Pegasus] Timeline STOP: stopped {len(drone_sim_dict)} backend(s); "
+            f"keeping multirotor(s) registered for next Play."
+        )
 
 
 class OgnPegasusMultirotorNodeBaseState:
