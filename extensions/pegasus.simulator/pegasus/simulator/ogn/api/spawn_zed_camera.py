@@ -221,7 +221,7 @@ def add_zed_stereo_camera_subgraph(
                             # Trigger render products every physics step
                             (f"{nodes['playback']}.outputs:tick", f"{left_nodes['create_rp']}.inputs:execIn"),
                             (f"{nodes['playback']}.outputs:tick", f"{right_nodes['create_rp']}.inputs:execIn"),
-                            (f"{nodes['playback']}.outputs:tick", f"{nodes['info_helper']}.inputs:execIn"),
+                            (f"{right_nodes['create_rp']}.outputs:execOut", f"{nodes['info_helper']}.inputs:execIn"),
 
                             # Stereo info helper input connections
                             (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPath"),
