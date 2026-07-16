@@ -107,6 +107,12 @@ def add_zed_stereo_camera_subgraph(
     right_frame_id: str = "camera_right",
     frame_height: int = 300,
     frame_width: int = 480,
+    enable_instance_segmentation: bool = False,
+    publish_instance_segmentation_labels: bool = True,
+    enable_semantic_segmentation: bool = False,
+    publish_semantic_segmentation_labels: bool = True,
+    enable_bbox_2d: bool = False,
+    publish_bbox_2d_labels: bool = True,
     ros2_context_node: str | None = None,
 ):
     """
@@ -132,6 +138,18 @@ def add_zed_stereo_camera_subgraph(
         sensors_topic_namespace (str): Parent topic namespace (e.g., "sensors").
         left_frame_id (str): Frame ID for left camera.
         right_frame_id (str): Frame ID for right camera.
+        enable_instance_segmentation (bool): Add left/right ROS2CameraHelper
+            nodes that publish instance segmentation images.
+        publish_instance_segmentation_labels (bool): Publish semantic label
+            maps for the instance segmentation outputs.
+        enable_semantic_segmentation (bool): Add left/right ROS2CameraHelper
+            nodes that publish semantic segmentation images.
+        publish_semantic_segmentation_labels (bool): Publish semantic label
+            maps for the semantic segmentation outputs.
+        enable_bbox_2d (bool): Add left/right ROS2CameraHelper nodes that
+            publish tight and loose 2D bounding boxes.
+        publish_bbox_2d_labels (bool): Publish semantic label maps for the
+            2D bounding-box outputs.
         ros2_context_node (str): Name of the ROS2Context node in the
             parent graph whose ``outputs:context`` will be wired into
             this subgraph's promoted ``inputs:context``.
@@ -168,8 +186,8 @@ def add_zed_stereo_camera_subgraph(
     # Node names
     nodes = {
         "playback": f"{robot_name}_{camera_name}_OnPlaybackTick",
-        "info_helper": f"{robot_name}_{camera_name}_StereoInfoHelper",
-        "stereo_ns_const": f"{robot_name}_{camera_name}_StereoNsConst",
+        "left_info_helper": f"{robot_name}_{camera_name}_LeftInfoHelper",
+        "right_info_helper": f"{robot_name}_{camera_name}_RightInfoHelper",
     }
 
     # Node identifiers for each render/camera output
@@ -177,6 +195,10 @@ def add_zed_stereo_camera_subgraph(
         "create_rp": f"{robot_name}_{camera_name}_LeftCreateRenderProduct",
         "rgb_helper": f"{robot_name}_{camera_name}_LeftRGBCameraHelper",
         "depth_helper": f"{robot_name}_{camera_name}_LeftDepthCameraHelper",
+        "instance_helper": f"{robot_name}_{camera_name}_LeftInstanceSegmentationHelper",
+        "semantic_helper": f"{robot_name}_{camera_name}_LeftSemanticSegmentationHelper",
+        "bbox_tight_helper": f"{robot_name}_{camera_name}_LeftBbox2DTightHelper",
+        "bbox_loose_helper": f"{robot_name}_{camera_name}_LeftBbox2DLooseHelper",
         "frame_const": f"{robot_name}_{camera_name}_LeftFrameIdConst",
         "ns_const": f"{robot_name}_{camera_name}_LeftNsConst",
     }
@@ -184,9 +206,140 @@ def add_zed_stereo_camera_subgraph(
         "create_rp": f"{robot_name}_{camera_name}_RightCreateRenderProduct",
         "rgb_helper": f"{robot_name}_{camera_name}_RightRGBCameraHelper",
         "depth_helper": f"{robot_name}_{camera_name}_RightDepthCameraHelper",
+        "instance_helper": f"{robot_name}_{camera_name}_RightInstanceSegmentationHelper",
+        "semantic_helper": f"{robot_name}_{camera_name}_RightSemanticSegmentationHelper",
+        "bbox_tight_helper": f"{robot_name}_{camera_name}_RightBbox2DTightHelper",
+        "bbox_loose_helper": f"{robot_name}_{camera_name}_RightBbox2DLooseHelper",
         "frame_const": f"{robot_name}_{camera_name}_RightFrameIdConst",
         "ns_const": f"{robot_name}_{camera_name}_RightNsConst",
     }
+
+    instance_segmentation_nodes = []
+    instance_segmentation_connections = []
+    instance_segmentation_values = []
+    instance_segmentation_promotions = []
+
+    if enable_instance_segmentation:
+        instance_segmentation_nodes = [
+            (left_nodes["instance_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+            (right_nodes["instance_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+        ]
+        instance_segmentation_connections = [
+            (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['instance_helper']}.inputs:execIn"),
+            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['instance_helper']}.inputs:renderProductPath"),
+            (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['instance_helper']}.inputs:frameId"),
+            (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['instance_helper']}.inputs:nodeNamespace"),
+
+            (f"{right_nodes['create_rp']}.outputs:execOut", f"{right_nodes['instance_helper']}.inputs:execIn"),
+            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['instance_helper']}.inputs:renderProductPath"),
+            (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['instance_helper']}.inputs:frameId"),
+            (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['instance_helper']}.inputs:nodeNamespace"),
+        ]
+        instance_segmentation_values = [
+            (("inputs:type", left_nodes["instance_helper"]), "instance_segmentation"),
+            (("inputs:topicName", left_nodes["instance_helper"]), "instance_segmentation"),
+            (("inputs:type", right_nodes["instance_helper"]), "instance_segmentation"),
+            (("inputs:topicName", right_nodes["instance_helper"]), "instance_segmentation"),
+        ]
+        instance_segmentation_promotions = [
+            (f"{left_nodes['instance_helper']}.inputs:context", "inputs:context_left_instance_segmentation"),
+            (f"{right_nodes['instance_helper']}.inputs:context", "inputs:context_right_instance_segmentation"),
+        ]
+
+        if publish_instance_segmentation_labels:
+            instance_segmentation_values.extend([
+                (("inputs:enableSemanticLabels", left_nodes["instance_helper"]), True),
+                (("inputs:semanticLabelsTopicName", left_nodes["instance_helper"]),
+                 "instance_segmentation_labels"),
+                (("inputs:enableSemanticLabels", right_nodes["instance_helper"]), True),
+                (("inputs:semanticLabelsTopicName", right_nodes["instance_helper"]),
+                 "instance_segmentation_labels"),
+            ])
+
+    semantic_segmentation_nodes = []
+    semantic_segmentation_connections = []
+    semantic_segmentation_values = []
+    semantic_segmentation_promotions = []
+
+    if enable_semantic_segmentation:
+        semantic_segmentation_nodes = [
+            (left_nodes["semantic_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+            (right_nodes["semantic_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+        ]
+        semantic_segmentation_connections = [
+            (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['semantic_helper']}.inputs:execIn"),
+            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['semantic_helper']}.inputs:renderProductPath"),
+            (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['semantic_helper']}.inputs:frameId"),
+            (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['semantic_helper']}.inputs:nodeNamespace"),
+
+            (f"{right_nodes['create_rp']}.outputs:execOut", f"{right_nodes['semantic_helper']}.inputs:execIn"),
+            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['semantic_helper']}.inputs:renderProductPath"),
+            (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['semantic_helper']}.inputs:frameId"),
+            (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['semantic_helper']}.inputs:nodeNamespace"),
+        ]
+        semantic_segmentation_values = [
+            (("inputs:type", left_nodes["semantic_helper"]), "semantic_segmentation"),
+            (("inputs:topicName", left_nodes["semantic_helper"]), "semantic_segmentation"),
+            (("inputs:type", right_nodes["semantic_helper"]), "semantic_segmentation"),
+            (("inputs:topicName", right_nodes["semantic_helper"]), "semantic_segmentation"),
+        ]
+        semantic_segmentation_promotions = [
+            (f"{left_nodes['semantic_helper']}.inputs:context", "inputs:context_left_semantic_segmentation"),
+            (f"{right_nodes['semantic_helper']}.inputs:context", "inputs:context_right_semantic_segmentation"),
+        ]
+
+        if publish_semantic_segmentation_labels:
+            semantic_segmentation_values.extend([
+                (("inputs:enableSemanticLabels", left_nodes["semantic_helper"]), True),
+                (("inputs:semanticLabelsTopicName", left_nodes["semantic_helper"]),
+                 "semantic_segmentation_labels"),
+                (("inputs:enableSemanticLabels", right_nodes["semantic_helper"]), True),
+                (("inputs:semanticLabelsTopicName", right_nodes["semantic_helper"]),
+                 "semantic_segmentation_labels"),
+            ])
+
+    bbox_2d_nodes = []
+    bbox_2d_connections = []
+    bbox_2d_values = []
+    bbox_2d_promotions = []
+
+    if enable_bbox_2d:
+        bbox_helper_specs = [
+            (left_nodes["bbox_tight_helper"], left_nodes, "bbox_2d_tight"),
+            (left_nodes["bbox_loose_helper"], left_nodes, "bbox_2d_loose"),
+            (right_nodes["bbox_tight_helper"], right_nodes, "bbox_2d_tight"),
+            (right_nodes["bbox_loose_helper"], right_nodes, "bbox_2d_loose"),
+        ]
+
+        bbox_2d_nodes = [
+            (helper_name, "isaacsim.ros2.bridge.ROS2CameraHelper")
+            for helper_name, _, _ in bbox_helper_specs
+        ]
+
+        for helper_name, side_nodes, camera_type in bbox_helper_specs:
+            bbox_2d_connections.extend([
+                (f"{side_nodes['create_rp']}.outputs:execOut", f"{helper_name}.inputs:execIn"),
+                (f"{side_nodes['create_rp']}.outputs:renderProductPath", f"{helper_name}.inputs:renderProductPath"),
+                (f"{side_nodes['frame_const']}.inputs:value", f"{helper_name}.inputs:frameId"),
+                (f"{side_nodes['ns_const']}.inputs:value", f"{helper_name}.inputs:nodeNamespace"),
+            ])
+            bbox_2d_values.extend([
+                (("inputs:type", helper_name), camera_type),
+                (("inputs:topicName", helper_name), camera_type),
+            ])
+
+            if publish_bbox_2d_labels:
+                bbox_2d_values.extend([
+                    (("inputs:enableSemanticLabels", helper_name), True),
+                    (("inputs:semanticLabelsTopicName", helper_name), f"{camera_type}_labels"),
+                ])
+
+        bbox_2d_promotions = [
+            (f"{left_nodes['bbox_tight_helper']}.inputs:context", "inputs:context_left_bbox_2d_tight"),
+            (f"{left_nodes['bbox_loose_helper']}.inputs:context", "inputs:context_left_bbox_2d_loose"),
+            (f"{right_nodes['bbox_tight_helper']}.inputs:context", "inputs:context_right_bbox_2d_tight"),
+            (f"{right_nodes['bbox_loose_helper']}.inputs:context", "inputs:context_right_bbox_2d_loose"),
+        ]
 
     # ── Step 1: create the compound subgraph with promoted context inputs ──
     controller.edit(
@@ -199,13 +352,13 @@ def add_zed_stereo_camera_subgraph(
                         og.Controller.Keys.CREATE_NODES: [
                             # Core nodes
                             (nodes["playback"], "omni.graph.action.OnPlaybackTick"),
-                            (nodes["info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+                            (nodes["left_info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+                            (nodes["right_info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
                             # Constant string inputs
                             (left_nodes["frame_const"], "omni.graph.nodes.ConstantString"),
                             (right_nodes["frame_const"], "omni.graph.nodes.ConstantString"),
                             (left_nodes["ns_const"], "omni.graph.nodes.ConstantString"),
                             (right_nodes["ns_const"], "omni.graph.nodes.ConstantString"),
-                            (nodes["stereo_ns_const"], "omni.graph.nodes.ConstantString"),
                             # Left camera nodes
                             (left_nodes["create_rp"], "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                             (left_nodes["rgb_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
@@ -214,23 +367,23 @@ def add_zed_stereo_camera_subgraph(
                             (right_nodes["create_rp"], "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                             (right_nodes["rgb_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
                             (right_nodes["depth_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                        ],
+                        ] + instance_segmentation_nodes + semantic_segmentation_nodes + bbox_2d_nodes,
 
                         # Wiring between nodes
                         og.Controller.Keys.CONNECT: [
                             # Trigger render products every physics step
                             (f"{nodes['playback']}.outputs:tick", f"{left_nodes['create_rp']}.inputs:execIn"),
                             (f"{nodes['playback']}.outputs:tick", f"{right_nodes['create_rp']}.inputs:execIn"),
-                            (f"{nodes['playback']}.outputs:tick", f"{nodes['info_helper']}.inputs:execIn"),
+                            (f"{nodes['playback']}.outputs:tick", f"{nodes['left_info_helper']}.inputs:execIn"),
+                            (f"{nodes['playback']}.outputs:tick", f"{nodes['right_info_helper']}.inputs:execIn"),
 
-                            # Stereo info helper input connections
-                            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPath"),
-                            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPathRight"),
-
-                            # Frame ID and namespace constants
-                            (f"{left_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameId"),
-                            (f"{right_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameIdRight"),
-                            (f"{nodes['stereo_ns_const']}.inputs:value", f"{nodes['info_helper']}.inputs:nodeNamespace"),
+                            # Camera info helper input connections
+                            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['left_info_helper']}.inputs:renderProductPath"),
+                            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['right_info_helper']}.inputs:renderProductPath"),
+                            (f"{left_nodes['frame_const']}.inputs:value", f"{nodes['left_info_helper']}.inputs:frameId"),
+                            (f"{right_nodes['frame_const']}.inputs:value", f"{nodes['right_info_helper']}.inputs:frameId"),
+                            (f"{left_nodes['ns_const']}.inputs:value", f"{nodes['left_info_helper']}.inputs:nodeNamespace"),
+                            (f"{right_nodes['ns_const']}.inputs:value", f"{nodes['right_info_helper']}.inputs:nodeNamespace"),
 
                             # Left camera outputs
                             (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['rgb_helper']}.inputs:execIn"),
@@ -253,7 +406,7 @@ def add_zed_stereo_camera_subgraph(
                             (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['depth_helper']}.inputs:renderProductPath"),
                             (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['depth_helper']}.inputs:frameId"),
                             (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['depth_helper']}.inputs:nodeNamespace"),
-                        ],
+                        ] + instance_segmentation_connections + semantic_segmentation_connections + bbox_2d_connections,
 
                         # Static attribute values
                         og.Controller.Keys.SET_VALUES: [
@@ -262,11 +415,10 @@ def add_zed_stereo_camera_subgraph(
                             (("inputs:value", right_nodes["frame_const"]), right_frame_id),
                             (("inputs:value", left_nodes["ns_const"]), left_ns),
                             (("inputs:value", right_nodes["ns_const"]), right_ns),
-                            (("inputs:value", nodes["stereo_ns_const"]), stereo_ns),
 
-                            # Stereo info topics
-                            (("inputs:topicName", nodes["info_helper"]), "left/camera_info"),
-                            (("inputs:topicNameRight", nodes["info_helper"]), "right/camera_info"),
+                            # Camera info topics
+                            (("inputs:topicName", nodes["left_info_helper"]), "camera_info"),
+                            (("inputs:topicName", nodes["right_info_helper"]), "camera_info"),
 
                             # Left render product + helpers
                             (("inputs:cameraPrim", left_nodes["create_rp"]), left_camera_prim),
@@ -285,17 +437,18 @@ def add_zed_stereo_camera_subgraph(
                             (("inputs:type", right_nodes["depth_helper"]), "depth"),
                             (("inputs:topicName", right_nodes["rgb_helper"]), "image_rect"),
                             (("inputs:topicName", right_nodes["depth_helper"]), "depth_ground_truth"),
-                        ],
+                        ] + instance_segmentation_values + semantic_segmentation_values + bbox_2d_values,
 
                         # Promote each helper's context input with a unique boundary name.
                         # OmniGraph doesn't allow multiple promotions to the same name.
                         og.Controller.Keys.PROMOTE_ATTRIBUTES: [
-                            (f"{nodes['info_helper']}.inputs:context", "inputs:context_info"),
+                            (f"{nodes['left_info_helper']}.inputs:context", "inputs:context_left_info"),
+                            (f"{nodes['right_info_helper']}.inputs:context", "inputs:context_right_info"),
                             (f"{left_nodes['rgb_helper']}.inputs:context", "inputs:context_left_rgb"),
                             (f"{left_nodes['depth_helper']}.inputs:context", "inputs:context_left_depth"),
                             (f"{right_nodes['rgb_helper']}.inputs:context", "inputs:context_right_rgb"),
                             (f"{right_nodes['depth_helper']}.inputs:context", "inputs:context_right_depth"),
-                        ],
+                        ] + instance_segmentation_promotions + semantic_segmentation_promotions + bbox_2d_promotions,
                     },
                 )
             ],
@@ -310,7 +463,9 @@ def add_zed_stereo_camera_subgraph(
         edit_commands={
             og.Controller.Keys.CONNECT: [
                 (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
-                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_info"),
+                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_info"),
+                (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_info"),
                 (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
                  f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_rgb"),
                 (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
@@ -319,7 +474,35 @@ def add_zed_stereo_camera_subgraph(
                  f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_rgb"),
                 (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
                  f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_depth"),
-            ],
+            ] + (
+                [
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_instance_segmentation"),
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_instance_segmentation"),
+                ]
+                if enable_instance_segmentation else []
+            ) + (
+                [
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_semantic_segmentation"),
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_semantic_segmentation"),
+                ]
+                if enable_semantic_segmentation else []
+            ) + (
+                [
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_bbox_2d_tight"),
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_bbox_2d_loose"),
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_bbox_2d_tight"),
+                    (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
+                     f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_bbox_2d_loose"),
+                ]
+                if enable_bbox_2d else []
+            ),
         },
     )
 
