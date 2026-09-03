@@ -2,6 +2,7 @@ import omni.graph.core as og
 from isaacsim.core.utils.prims import define_prim, get_prim_at_path
 from pxr import UsdGeom, Gf, Sdf
 from omni.physx.scripts import utils as physx_utils
+import os
 import omni
 
 ZED_X_CAMERA_USD_URL = (
@@ -168,6 +169,7 @@ def add_zed_stereo_camera_subgraph(
     # Node names
     nodes = {
         "playback": f"{robot_name}_{camera_name}_OnPlaybackTick",
+        "gate": f"{robot_name}_{camera_name}_RenderGate",
         "info_helper": f"{robot_name}_{camera_name}_StereoInfoHelper",
         "stereo_ns_const": f"{robot_name}_{camera_name}_StereoNsConst",
     }
@@ -199,6 +201,7 @@ def add_zed_stereo_camera_subgraph(
                         og.Controller.Keys.CREATE_NODES: [
                             # Core nodes
                             (nodes["playback"], "omni.graph.action.OnPlaybackTick"),
+                            (nodes["gate"], "isaacsim.core.nodes.IsaacSimulationGate"),
                             (nodes["info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
                             # Constant string inputs
                             (left_nodes["frame_const"], "omni.graph.nodes.ConstantString"),
@@ -218,9 +221,32 @@ def add_zed_stereo_camera_subgraph(
 
                         # Wiring between nodes
                         og.Controller.Keys.CONNECT: [
-                            # Trigger render products every physics step
-                            (f"{nodes['playback']}.outputs:tick", f"{left_nodes['create_rp']}.inputs:execIn"),
-                            (f"{nodes['playback']}.outputs:tick", f"{right_nodes['create_rp']}.inputs:execIn"),
+                            # Trigger render products through a SIMULATION GATE
+                            # rather than on every physics step.
+                            #
+                            # Rendering is what saturates the GPU in the
+                            # 8-drone benchmark: measured 2026-08-31, GPU 1 sat
+                            # at 73-84 % with 5.8 GB while the sim managed
+                            # RTF 0.048. Sixteen render products (left+right
+                            # per drone) firing every tick is the load. The
+                            # gate's `step` divides that: step=2 renders every
+                            # other tick, halving camera cost for a
+                            # proportional drop in image rate (~4.4 Hz -> ~2.2 Hz
+                            # as measured on this scene).
+                            #
+                            # MEASURED with step=2 on this scene: RTF rose
+                            # 0.048 -> 0.063 (+31 %) and GPU fell from 73-84 %
+                            # / 5.8 GB to 0 % / 2.97 GB — but the image rate
+                            # fell 4.37 -> 1.39 Hz, a 3x drop rather than the
+                            # 2x asked for. The detector already cleared its
+                            # 0.65 gate on a minority of ticks, so a third of
+                            # the frames is a worse trade than a 31 % speedup
+                            # is worth. DEFAULT IS THEREFORE 1 (every tick,
+                            # original behaviour); set ZED_RENDER_STEP=2 to
+                            # buy speed back when frames are cheap.
+                            (f"{nodes['playback']}.outputs:tick", f"{nodes['gate']}.inputs:execIn"),
+                            (f"{nodes['gate']}.outputs:execOut", f"{left_nodes['create_rp']}.inputs:execIn"),
+                            (f"{nodes['gate']}.outputs:execOut", f"{right_nodes['create_rp']}.inputs:execIn"),
                             (f"{right_nodes['create_rp']}.outputs:execOut", f"{nodes['info_helper']}.inputs:execIn"),
 
                             # Stereo info helper input connections
@@ -257,6 +283,8 @@ def add_zed_stereo_camera_subgraph(
 
                         # Static attribute values
                         og.Controller.Keys.SET_VALUES: [
+                            (f"{nodes['gate']}.inputs:step",
+                             int(os.environ.get("ZED_RENDER_STEP", "").strip() or 1)),
                             # Frame IDs and namespaces
                             (("inputs:value", left_nodes["frame_const"]), left_frame_id),
                             (("inputs:value", right_nodes["frame_const"]), right_frame_id),
