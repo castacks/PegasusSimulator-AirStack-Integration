@@ -10,6 +10,8 @@ For self-hits, tune ``min_range``, mount offset, ROS / VDB filtering
 (``min_sensor_range``), or edit the RTX lidar profile JSON under the Isaac install.
 """
 
+import os
+
 import omni.graph.core as og
 from pxr import UsdGeom, Gf, UsdPhysics
 from omni.physx.scripts import utils as physx_utils
@@ -295,6 +297,10 @@ def add_rtx_lidar_subgraph(
             default, typically ~0.3 m).
         ros2_context_node: Name of the ``ROS2Context`` node in the parent
             graph.  Defaults to ``"{robot_name}_ROS2Context"``.
+
+    Returns:
+        The promoted ``inputs:render_step`` attribute used to rate-limit or
+        phase-schedule this LiDAR, or ``None`` when sensor/graph setup fails.
     """
     if ros2_context_node is None:
         ros2_context_node = f"{robot_name}_ROS2Context"
@@ -325,6 +331,7 @@ def add_rtx_lidar_subgraph(
 
     subgraph_name = f"{lidar_name}Graph"
     playback_tick = f"{lidar_name}OnPlaybackTick"
+    simulation_gate = f"{lidar_name}SimulationGate"
     create_render = f"{lidar_name}CreateRenderProduct"
     rtx_helper = f"{lidar_name}ROS2RtxLidarHelper"
     frame_const = f"{lidar_name}FrameIdConst"
@@ -340,6 +347,7 @@ def add_rtx_lidar_subgraph(
                     {
                         og.Controller.Keys.CREATE_NODES: [
                             (playback_tick, "omni.graph.action.OnPlaybackTick"),
+                            (simulation_gate, "isaacsim.core.nodes.IsaacSimulationGate"),
                             (create_render, "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                             (rtx_helper, "isaacsim.ros2.bridge.ROS2RtxLidarHelper"),
                             (frame_const, "omni.graph.nodes.ConstantString"),
@@ -352,9 +360,12 @@ def add_rtx_lidar_subgraph(
                             (("inputs:topicName", rtx_helper), lidar_topic_name),
                             (("inputs:type", rtx_helper), "point_cloud"),
                             (("inputs:fullScan", rtx_helper), True),
+                            (f"{simulation_gate}.inputs:step",
+                             int(os.environ.get("LIDAR_RENDER_STEP", "").strip() or 1)),
                         ],
                         og.Controller.Keys.CONNECT: [
-                            (f"{playback_tick}.outputs:tick", f"{create_render}.inputs:execIn"),
+                            (f"{playback_tick}.outputs:tick", f"{simulation_gate}.inputs:execIn"),
+                            (f"{simulation_gate}.outputs:execOut", f"{create_render}.inputs:execIn"),
                             (f"{create_render}.outputs:execOut", f"{rtx_helper}.inputs:execIn"),
                             (f"{create_render}.outputs:renderProductPath", f"{rtx_helper}.inputs:renderProductPath"),
                             (f"{frame_const}.inputs:value", f"{rtx_helper}.inputs:frameId"),
@@ -362,6 +373,7 @@ def add_rtx_lidar_subgraph(
                         ],
                         og.Controller.Keys.PROMOTE_ATTRIBUTES: [
                             (f"{rtx_helper}.inputs:context", "inputs:context"),
+                            (f"{simulation_gate}.inputs:step", "inputs:render_step"),
                         ],
                     },
                 )
@@ -394,3 +406,8 @@ def add_rtx_lidar_subgraph(
         f"[RTX LiDAR] Subgraph '{subgraph_name}' added under "
         f"'{parent_graph_path}'."
     )
+    # Optional fleet-level phase scheduling uses this promoted step input in
+    # exactly the same way as the ZED graph. With one group it remains at
+    # LIDAR_RENDER_STEP (default 1), preserving historical behaviour.
+    return controller.attribute(
+        f"{parent_graph_path}/{subgraph_name}.inputs:render_step")

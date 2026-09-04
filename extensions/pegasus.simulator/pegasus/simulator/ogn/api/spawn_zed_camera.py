@@ -109,6 +109,8 @@ def add_zed_stereo_camera_subgraph(
     frame_height: int = 300,
     frame_width: int = 480,
     ros2_context_node: str | None = None,
+    pipeline_mode: str = "stereo",
+    manage_render_updates: bool = False,
 ):
     """
     Create an Isaac Sim OmniGraph subgraph that connects a ZED stereo camera
@@ -136,7 +138,25 @@ def add_zed_stereo_camera_subgraph(
         ros2_context_node (str): Name of the ROS2Context node in the
             parent graph whose ``outputs:context`` will be wired into
             this subgraph's promoted ``inputs:context``.
+        pipeline_mode (str): ``stereo`` preserves both render products;
+            ``mono_rgbd`` renders only the left eye and publishes RGB, ground-
+            truth depth, depth point cloud, and camera info from that product.
+        manage_render_updates (bool): Create the render product through
+            Replicator and return its handle so a fleet launcher can pause the
+            inactive Hydra textures.  This is opt-in because it changes render-
+            product ownership; the historical OmniGraph-created path remains
+            the default.
+
+    Returns:
+        The promoted ``inputs:render_step`` attribute used to rate-limit or
+        phase-schedule this camera graph.  When ``manage_render_updates`` is
+        true, returns ``(render_step_attribute, render_products)`` instead.
     """
+
+    if pipeline_mode not in ("stereo", "mono_rgbd"):
+        raise ValueError("pipeline_mode must be 'stereo' or 'mono_rgbd', got "
+                         f"{pipeline_mode!r}")
+    mono_rgbd = pipeline_mode == "mono_rgbd"
 
     if ros2_context_node is None:
         ros2_context_node = f"{robot_name}_ROS2Context"
@@ -190,6 +210,168 @@ def add_zed_stereo_camera_subgraph(
         "ns_const": f"{robot_name}_{camera_name}_RightNsConst",
     }
 
+    # Build the mode-dependent pieces separately so the default stereo graph
+    # remains exactly the historical graph.  mono_rgbd has no right render
+    # product at all and publishes a PointCloud2 directly from the left GT
+    # depth render product; this is materially cheaper than merely suppressing
+    # the right depth writer while continuing to render the right eye.
+    camera_nodes = [
+        (left_nodes["create_rp"], "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+        (left_nodes["rgb_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+        (left_nodes["depth_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+    ]
+    camera_connections = [
+        (f"{nodes['gate']}.outputs:execOut", f"{left_nodes['create_rp']}.inputs:execIn"),
+        (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['rgb_helper']}.inputs:execIn"),
+        (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['rgb_helper']}.inputs:renderProductPath"),
+        (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['rgb_helper']}.inputs:frameId"),
+        (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['rgb_helper']}.inputs:nodeNamespace"),
+        (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['depth_helper']}.inputs:execIn"),
+        (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['depth_helper']}.inputs:renderProductPath"),
+        (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['depth_helper']}.inputs:frameId"),
+        (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['depth_helper']}.inputs:nodeNamespace"),
+    ]
+    camera_values = [
+        (("inputs:cameraPrim", left_nodes["create_rp"]), left_camera_prim),
+        (("inputs:height", left_nodes["create_rp"]), frame_height),
+        (("inputs:width", left_nodes["create_rp"]), frame_width),
+        (("inputs:type", left_nodes["rgb_helper"]), "rgb"),
+        (("inputs:type", left_nodes["depth_helper"]), "depth"),
+        (("inputs:topicName", left_nodes["rgb_helper"]), "image_rect"),
+        (("inputs:topicName", left_nodes["depth_helper"]), "depth_ground_truth"),
+    ]
+    context_promotions = [
+        (f"{left_nodes['rgb_helper']}.inputs:context", "inputs:context_left_rgb"),
+        (f"{left_nodes['depth_helper']}.inputs:context", "inputs:context_left_depth"),
+    ]
+    context_connections = ["context_left_rgb", "context_left_depth"]
+    if mono_rgbd:
+        left_nodes["pcl_helper"] = f"{robot_name}_{camera_name}_LeftDepthPclHelper"
+        camera_nodes.extend([
+            (left_nodes["pcl_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+            (nodes["info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+        ])
+        camera_connections.extend([
+            (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['pcl_helper']}.inputs:execIn"),
+            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['pcl_helper']}.inputs:renderProductPath"),
+            (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['pcl_helper']}.inputs:frameId"),
+            (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['pcl_helper']}.inputs:nodeNamespace"),
+            (f"{left_nodes['create_rp']}.outputs:execOut", f"{nodes['info_helper']}.inputs:execIn"),
+            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPath"),
+            (f"{left_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameId"),
+            (f"{left_nodes['ns_const']}.inputs:value", f"{nodes['info_helper']}.inputs:nodeNamespace"),
+        ])
+        camera_values.extend([
+            (("inputs:type", left_nodes["pcl_helper"]), "depth_pcl"),
+            (("inputs:topicName", left_nodes["pcl_helper"]), "depth_pcl"),
+            (("inputs:topicName", nodes["info_helper"]), "camera_info"),
+        ])
+        context_promotions.extend([
+            (f"{left_nodes['pcl_helper']}.inputs:context", "inputs:context_left_pcl"),
+            (f"{nodes['info_helper']}.inputs:context", "inputs:context_info"),
+        ])
+        context_connections.extend(["context_left_pcl", "context_info"])
+    else:
+        camera_nodes.extend([
+            (nodes["info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+            (right_nodes["frame_const"], "omni.graph.nodes.ConstantString"),
+            (right_nodes["ns_const"], "omni.graph.nodes.ConstantString"),
+            (nodes["stereo_ns_const"], "omni.graph.nodes.ConstantString"),
+            (right_nodes["create_rp"], "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+            (right_nodes["rgb_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+            (right_nodes["depth_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+        ])
+        camera_connections.extend([
+            (f"{nodes['gate']}.outputs:execOut", f"{right_nodes['create_rp']}.inputs:execIn"),
+            (f"{right_nodes['create_rp']}.outputs:execOut", f"{nodes['info_helper']}.inputs:execIn"),
+            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPath"),
+            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPathRight"),
+            (f"{left_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameId"),
+            (f"{right_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameIdRight"),
+            (f"{nodes['stereo_ns_const']}.inputs:value", f"{nodes['info_helper']}.inputs:nodeNamespace"),
+            (f"{right_nodes['create_rp']}.outputs:execOut", f"{right_nodes['rgb_helper']}.inputs:execIn"),
+            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['rgb_helper']}.inputs:renderProductPath"),
+            (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['rgb_helper']}.inputs:frameId"),
+            (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['rgb_helper']}.inputs:nodeNamespace"),
+            (f"{right_nodes['create_rp']}.outputs:execOut", f"{right_nodes['depth_helper']}.inputs:execIn"),
+            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['depth_helper']}.inputs:renderProductPath"),
+            (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['depth_helper']}.inputs:frameId"),
+            (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['depth_helper']}.inputs:nodeNamespace"),
+        ])
+        camera_values.extend([
+            (("inputs:value", right_nodes["frame_const"]), right_frame_id),
+            (("inputs:value", right_nodes["ns_const"]), right_ns),
+            (("inputs:value", nodes["stereo_ns_const"]), stereo_ns),
+            (("inputs:topicName", nodes["info_helper"]), "left/camera_info"),
+            (("inputs:topicNameRight", nodes["info_helper"]), "right/camera_info"),
+            (("inputs:cameraPrim", right_nodes["create_rp"]), right_camera_prim),
+            (("inputs:height", right_nodes["create_rp"]), frame_height),
+            (("inputs:width", right_nodes["create_rp"]), frame_width),
+            (("inputs:type", right_nodes["rgb_helper"]), "rgb"),
+            (("inputs:type", right_nodes["depth_helper"]), "depth"),
+            (("inputs:topicName", right_nodes["rgb_helper"]), "image_rect"),
+            (("inputs:topicName", right_nodes["depth_helper"]), "depth_ground_truth"),
+        ])
+        context_promotions.extend([
+            (f"{nodes['info_helper']}.inputs:context", "inputs:context_info"),
+            (f"{right_nodes['rgb_helper']}.inputs:context", "inputs:context_right_rgb"),
+            (f"{right_nodes['depth_helper']}.inputs:context", "inputs:context_right_depth"),
+        ])
+        context_connections.extend(["context_info", "context_right_rgb", "context_right_depth"])
+
+    # A SimulationGate controls graph execution/publication, but an authored
+    # render product can remain active in Hydra after its helper has attached.
+    # For fleet time slicing, create the products through Replicator so the
+    # launcher owns their HydraTexture handles and can pause actual rendering
+    # on inactive cameras.  Keep the graph construction above as the single
+    # source of helper wiring, then mechanically replace each create-product
+    # node with a static path to the equivalent Replicator product.
+    managed_render_products = []
+    if manage_render_updates:
+        import omni.replicator.core as rep
+
+        left_rp = rep.create.render_product(
+            left_camera_prim, (frame_width, frame_height),
+            name=f"{robot_name}_{camera_name}_left_rp")
+        managed_render_products.append(left_rp)
+        render_products_by_node = {left_nodes["create_rp"]: left_rp}
+        if not mono_rgbd:
+            right_rp = rep.create.render_product(
+                right_camera_prim, (frame_width, frame_height),
+                name=f"{robot_name}_{camera_name}_right_rp")
+            managed_render_products.append(right_rp)
+            render_products_by_node[right_nodes["create_rp"]] = right_rp
+
+        create_nodes = set(render_products_by_node)
+        camera_nodes = [
+            item for item in camera_nodes if item[0] not in create_nodes]
+        camera_values = [
+            item for item in camera_values
+            if not (isinstance(item[0], tuple) and
+                    len(item[0]) == 2 and item[0][1] in create_nodes)]
+
+        managed_connections = []
+        for source, destination in camera_connections:
+            source_node = source.split(".", 1)[0]
+            destination_node = destination.split(".", 1)[0]
+            if destination_node in create_nodes:
+                # The product already exists; there is no create node to tick.
+                continue
+            if source_node not in create_nodes:
+                managed_connections.append((source, destination))
+                continue
+            if source.endswith(".outputs:renderProductPath"):
+                camera_values.append(
+                    (destination, str(render_products_by_node[source_node].path)))
+            elif source.endswith(".outputs:execOut"):
+                managed_connections.append(
+                    (f"{nodes['gate']}.outputs:execOut", destination))
+            else:
+                raise RuntimeError(
+                    f"unsupported create-render-product edge: {source} -> "
+                    f"{destination}")
+        camera_connections = managed_connections
+
     # ── Step 1: create the compound subgraph with promoted context inputs ──
     controller.edit(
         graph_id=parent_graph_path,
@@ -202,21 +384,10 @@ def add_zed_stereo_camera_subgraph(
                             # Core nodes
                             (nodes["playback"], "omni.graph.action.OnPlaybackTick"),
                             (nodes["gate"], "isaacsim.core.nodes.IsaacSimulationGate"),
-                            (nodes["info_helper"], "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
                             # Constant string inputs
                             (left_nodes["frame_const"], "omni.graph.nodes.ConstantString"),
-                            (right_nodes["frame_const"], "omni.graph.nodes.ConstantString"),
                             (left_nodes["ns_const"], "omni.graph.nodes.ConstantString"),
-                            (right_nodes["ns_const"], "omni.graph.nodes.ConstantString"),
-                            (nodes["stereo_ns_const"], "omni.graph.nodes.ConstantString"),
-                            # Left camera nodes
-                            (left_nodes["create_rp"], "isaacsim.core.nodes.IsaacCreateRenderProduct"),
-                            (left_nodes["rgb_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                            (left_nodes["depth_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                            # Right camera nodes
-                            (right_nodes["create_rp"], "isaacsim.core.nodes.IsaacCreateRenderProduct"),
-                            (right_nodes["rgb_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                            (right_nodes["depth_helper"], "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                            *camera_nodes,
                         ],
 
                         # Wiring between nodes
@@ -245,40 +416,7 @@ def add_zed_stereo_camera_subgraph(
                             # original behaviour); set ZED_RENDER_STEP=2 to
                             # buy speed back when frames are cheap.
                             (f"{nodes['playback']}.outputs:tick", f"{nodes['gate']}.inputs:execIn"),
-                            (f"{nodes['gate']}.outputs:execOut", f"{left_nodes['create_rp']}.inputs:execIn"),
-                            (f"{nodes['gate']}.outputs:execOut", f"{right_nodes['create_rp']}.inputs:execIn"),
-                            (f"{right_nodes['create_rp']}.outputs:execOut", f"{nodes['info_helper']}.inputs:execIn"),
-
-                            # Stereo info helper input connections
-                            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPath"),
-                            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{nodes['info_helper']}.inputs:renderProductPathRight"),
-
-                            # Frame ID and namespace constants
-                            (f"{left_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameId"),
-                            (f"{right_nodes['frame_const']}.inputs:value", f"{nodes['info_helper']}.inputs:frameIdRight"),
-                            (f"{nodes['stereo_ns_const']}.inputs:value", f"{nodes['info_helper']}.inputs:nodeNamespace"),
-
-                            # Left camera outputs
-                            (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['rgb_helper']}.inputs:execIn"),
-                            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['depth_helper']}.inputs:renderProductPath"),
-                            (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['rgb_helper']}.inputs:frameId"),
-                            (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['rgb_helper']}.inputs:nodeNamespace"),
-
-                            (f"{left_nodes['create_rp']}.outputs:execOut", f"{left_nodes['depth_helper']}.inputs:execIn"),
-                            (f"{left_nodes['create_rp']}.outputs:renderProductPath", f"{left_nodes['rgb_helper']}.inputs:renderProductPath"),
-                            (f"{left_nodes['frame_const']}.inputs:value", f"{left_nodes['depth_helper']}.inputs:frameId"),
-                            (f"{left_nodes['ns_const']}.inputs:value", f"{left_nodes['depth_helper']}.inputs:nodeNamespace"),
-
-                            # Right camera outputs
-                            (f"{right_nodes['create_rp']}.outputs:execOut", f"{right_nodes['rgb_helper']}.inputs:execIn"),
-                            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['rgb_helper']}.inputs:renderProductPath"),
-                            (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['rgb_helper']}.inputs:frameId"),
-                            (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['rgb_helper']}.inputs:nodeNamespace"),
-
-                            (f"{right_nodes['create_rp']}.outputs:execOut", f"{right_nodes['depth_helper']}.inputs:execIn"),
-                            (f"{right_nodes['create_rp']}.outputs:renderProductPath", f"{right_nodes['depth_helper']}.inputs:renderProductPath"),
-                            (f"{right_nodes['frame_const']}.inputs:value", f"{right_nodes['depth_helper']}.inputs:frameId"),
-                            (f"{right_nodes['ns_const']}.inputs:value", f"{right_nodes['depth_helper']}.inputs:nodeNamespace"),
+                            *camera_connections,
                         ],
 
                         # Static attribute values
@@ -287,42 +425,15 @@ def add_zed_stereo_camera_subgraph(
                              int(os.environ.get("ZED_RENDER_STEP", "").strip() or 1)),
                             # Frame IDs and namespaces
                             (("inputs:value", left_nodes["frame_const"]), left_frame_id),
-                            (("inputs:value", right_nodes["frame_const"]), right_frame_id),
                             (("inputs:value", left_nodes["ns_const"]), left_ns),
-                            (("inputs:value", right_nodes["ns_const"]), right_ns),
-                            (("inputs:value", nodes["stereo_ns_const"]), stereo_ns),
-
-                            # Stereo info topics
-                            (("inputs:topicName", nodes["info_helper"]), "left/camera_info"),
-                            (("inputs:topicNameRight", nodes["info_helper"]), "right/camera_info"),
-
-                            # Left render product + helpers
-                            (("inputs:cameraPrim", left_nodes["create_rp"]), left_camera_prim),
-                            (("inputs:height", left_nodes["create_rp"]), frame_height),
-                            (("inputs:width", left_nodes["create_rp"]), frame_width),
-                            (("inputs:type", left_nodes["rgb_helper"]), "rgb"),
-                            (("inputs:type", left_nodes["depth_helper"]), "depth"),
-                            (("inputs:topicName", left_nodes["rgb_helper"]), "image_rect"),
-                            (("inputs:topicName", left_nodes["depth_helper"]), "depth_ground_truth"),
-
-                            # Right render product + helpers
-                            (("inputs:cameraPrim", right_nodes["create_rp"]), right_camera_prim),
-                            (("inputs:height", right_nodes["create_rp"]), frame_height),
-                            (("inputs:width", right_nodes["create_rp"]), frame_width),
-                            (("inputs:type", right_nodes["rgb_helper"]), "rgb"),
-                            (("inputs:type", right_nodes["depth_helper"]), "depth"),
-                            (("inputs:topicName", right_nodes["rgb_helper"]), "image_rect"),
-                            (("inputs:topicName", right_nodes["depth_helper"]), "depth_ground_truth"),
+                            *camera_values,
                         ],
 
                         # Promote each helper's context input with a unique boundary name.
                         # OmniGraph doesn't allow multiple promotions to the same name.
                         og.Controller.Keys.PROMOTE_ATTRIBUTES: [
-                            (f"{nodes['info_helper']}.inputs:context", "inputs:context_info"),
-                            (f"{left_nodes['rgb_helper']}.inputs:context", "inputs:context_left_rgb"),
-                            (f"{left_nodes['depth_helper']}.inputs:context", "inputs:context_left_depth"),
-                            (f"{right_nodes['rgb_helper']}.inputs:context", "inputs:context_right_rgb"),
-                            (f"{right_nodes['depth_helper']}.inputs:context", "inputs:context_right_depth"),
+                            (f"{nodes['gate']}.inputs:step", "inputs:render_step"),
+                            *context_promotions,
                         ],
                     },
                 )
@@ -338,17 +449,18 @@ def add_zed_stereo_camera_subgraph(
         edit_commands={
             og.Controller.Keys.CONNECT: [
                 (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
-                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_info"),
-                (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
-                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_rgb"),
-                (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
-                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_left_depth"),
-                (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
-                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_rgb"),
-                (f"{parent_graph_path}/{ros2_context_node}.outputs:context",
-                 f"{parent_graph_path}/{stereo_graph_name}.inputs:context_right_depth"),
+                 f"{parent_graph_path}/{stereo_graph_name}.inputs:{boundary}")
+                for boundary in context_connections
             ],
         },
     )
 
-    print(f"Created ZED stereo camera graph '{stereo_graph_name}' under drone '{drone_prim}'")
+    print(f"Created ZED {pipeline_mode} camera graph '{stereo_graph_name}' under drone '{drone_prim}'")
+    # The launcher may use this handle to stagger logical cameras across
+    # simulation ticks. Leaving it at the configured step preserves the
+    # historical all-cameras-together schedule.
+    render_step_attribute = controller.attribute(
+        f"{parent_graph_path}/{stereo_graph_name}.inputs:render_step")
+    if manage_render_updates:
+        return render_step_attribute, managed_render_products
+    return render_step_attribute
